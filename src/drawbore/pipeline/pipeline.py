@@ -460,6 +460,10 @@ class Pipeline:
         # the whole run sees — it must feed both the ToolProxy and the ToolLoopBundle,
         # or mocked handlers/operations/loop tool schemas diverge.
         registry = registry_override if registry_override is not None else self._registry
+        # Join indices whose ledger `restored_join` entry was emitted during
+        # pre-flight (in index order). The in-loop restore short-circuit must not
+        # log them a second time.
+        preflight_joins: set[int] = set()
         issuer = TokenIssuer()
         ledger = TaintLedger(initial_trust=initial_trust, managed=True)
         proxy = ToolProxy(registry, issuer, ledger=ledger)
@@ -504,7 +508,15 @@ class Pipeline:
                 refusals: list[tuple[int, str, tuple[str, ...]]] = []
                 for i, node_ in enumerate(self.steps):
                     if isinstance(node_, _JoinNode):
-                        continue  # joins are covered by the topology fingerprint
+                        # Joins are covered by the topology fingerprint and are
+                        # never sealed, but a checkpoint-completed join still
+                        # belongs in the ledger in index order — record it here
+                        # so a refused resume lists it and a clean resume keeps
+                        # entries ordered.
+                        if checkpoints.is_completed(run_id, i):
+                            ledger_builder.restored_join(i, node_.name)
+                            preflight_joins.add(i)
+                        continue
                     if not checkpoints.is_completed(run_id, i):
                         continue
                     current = seal_for(node_.agent.spec, node_.evidence)
@@ -574,7 +586,8 @@ class Pipeline:
                 if checkpoints is not None and checkpoints.is_completed(run_id, idx):
                     outputs[name] = checkpoints.output_of(run_id, idx)
                     output_trust[name] = checkpoints.trust_of(run_id, idx)
-                    ledger_builder.restored_join(idx, name)
+                    if idx not in preflight_joins:
+                        ledger_builder.restored_join(idx, name)
                     steps_run += 1
                     continue
                 # joins are exempt from skip-propagation: always dispatch.

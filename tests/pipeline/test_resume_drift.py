@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from drawbore import Pipeline, agent
 from drawbore.escalation import EscalationPolicy
+from drawbore.pipeline import From, When, Join
 from drawbore.state import InMemoryCheckpointStore
 
 
@@ -249,6 +250,129 @@ async def test_refusal_reason_uses_friendly_label():
     assert result.halt_code == "resume_drift"
     assert "instructions" in result.reason
     assert "instructions_fingerprint" not in result.reason
+
+
+# --- resume ledger with a checkpoint-completed Join ---------------------------
+
+
+class Seed(BaseModel):
+    value: int
+
+
+class Scored(BaseModel):
+    level: str
+
+
+class Review(BaseModel):
+    verdict: str
+
+
+class JFinal(BaseModel):
+    verdict: str
+
+
+def _join_pipeline(*, fail_writer: bool, score_version: str = "1.0.0") -> Pipeline:
+    """Build score(0) -> enhanced(1)/standard(2) -> Join review(3) ->
+    reviewer(4) -> writer(5).
+
+    With value=1 the branch gate sends work down `standard`; the join and the
+    post-join `reviewer` both complete before `writer`, which halts in the
+    first attempt (``fail_writer``). On a clean resume `writer` succeeds. The
+    completed agent AFTER the join (reviewer, index 4) is what exposes the
+    out-of-order bug if the join's restored entry is logged late.
+    """
+
+    @agent(name="score", input=Seed, output=Scored, version=score_version)
+    async def score(v: Seed) -> Scored:
+        CALLS["score"] = CALLS.get("score", 0) + 1
+        return Scored(level="high" if v.value > 10 else "low")
+
+    @agent(name="enhanced", input=Scored, output=Review, version="1.0.0")
+    async def enhanced(v: Scored) -> Review:
+        CALLS["enhanced"] = CALLS.get("enhanced", 0) + 1
+        return Review(verdict="enhanced")
+
+    @agent(name="standard", input=Scored, output=Review, version="1.0.0")
+    async def standard(v: Scored) -> Review:
+        CALLS["standard"] = CALLS.get("standard", 0) + 1
+        return Review(verdict="standard")
+
+    @agent(name="reviewer", input=Review, output=JFinal, version="1.0.0")
+    async def reviewer(v: Review) -> JFinal:
+        CALLS["reviewer"] = CALLS.get("reviewer", 0) + 1
+        return JFinal(verdict=v.verdict)
+
+    @agent(name="writer", input=JFinal, output=JFinal, version="1.0.0")
+    async def writer(v: JFinal) -> JFinal:
+        CALLS["writer"] = CALLS.get("writer", 0) + 1
+        if fail_writer:
+            raise RuntimeError("writer exploded")
+        return JFinal(verdict=v.verdict)
+
+    p = Pipeline(name="join-resume")
+    p.add(score)
+    p.add(enhanced, inputs={"level": From("score.level")}, when=When("score.level", equals="high"))
+    p.add(standard, inputs={"level": From("score.level")}, when=When("score.level", in_=("low", "medium")))
+    p.add(Join("review", sources=["enhanced", "standard"], policy="exactly_one", output=Review))
+    p.add(reviewer, inputs={"verdict": From("review.verdict")})
+    p.add(writer, inputs={"verdict": From("reviewer.verdict")})
+    return p
+
+
+@pytest.mark.asyncio
+async def test_refused_resume_ledger_includes_completed_join():
+    """A refused resume must list a checkpoint-completed join in its ledger:
+    the join (index 3) appears with disposition 'restored' and seal 'none',
+    even though refusal is driven by a drifted agent."""
+    store = InMemoryCheckpointStore()
+    first = await _join_pipeline(fail_writer=True).run(
+        Seed(value=1), run_id="r1", checkpoints=store
+    )
+    assert first.status == "halted"  # writer exploded; join + reviewer checkpointed
+
+    # Drift the (completed) score agent's version; topology unchanged -> refused.
+    p2 = _join_pipeline(fail_writer=False, score_version="9.9.9")
+    second = await p2.run(Seed(value=1), run_id="r1", checkpoints=store)
+    assert second.status == "halted"
+    assert second.halt_code == "resume_drift"
+
+    ledger = second.resume_ledger
+    assert ledger is not None
+    join_entries = [e for e in ledger.entries if e.agent == "review"]
+    assert len(join_entries) == 1
+    assert join_entries[0].index == 3
+    assert join_entries[0].disposition == "restored"
+    assert join_entries[0].seal == "none"
+
+
+@pytest.mark.asyncio
+async def test_clean_resume_with_join_keeps_ledger_in_index_order():
+    """On a clean resume past a completed join, ledger entries stay in index
+    order — the join's restored entry is logged in pre-flight, not appended
+    late by the in-loop short-circuit."""
+    store = InMemoryCheckpointStore()
+    first = await _join_pipeline(fail_writer=True).run(
+        Seed(value=1), run_id="r1", checkpoints=store
+    )
+    assert first.status == "halted"
+
+    second = await _join_pipeline(fail_writer=False).run(
+        Seed(value=1), run_id="r1", checkpoints=store
+    )
+    assert second.status == "completed"
+    ledger = second.resume_ledger
+    assert ledger is not None
+    # The join (3) sits between completed agents (0/standard 2) and the
+    # post-join reviewer (4). Restored/executed entries must be index-ordered:
+    # without the pre-flight fix the join's restored entry is appended late by
+    # the in-loop short-circuit, landing after reviewer(4). (Skipped-branch
+    # entries are logged in execution order — a separate artifact — so they are
+    # excluded here.)
+    indices = [e.index for e in ledger.entries if e.disposition != "skipped"]
+    assert indices == sorted(indices)
+    assert 3 in indices  # the completed join is part of the ordered run
+    # The completed join is present exactly once.
+    assert sum(1 for e in ledger.entries if e.agent == "review") == 1
 
 
 @pytest.mark.asyncio
