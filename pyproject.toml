@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 # Distribution name and import name are both "drawbore"
 # (name confirmed available on PyPI).
 name = "drawbore"
-version = "0.1.0"
+version = "0.2.0"
 description = "Constrained, composable agents that hold by construction — a safety-first SDK for high-stakes, deterministic agent workflows."
 readme = "README.md"
 requires-python = ">=3.11"

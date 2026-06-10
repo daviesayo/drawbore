@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-11
+
 ### Added
 - Refuse-on-drift resume: resuming a checkpointed run now verifies a per-step
   seal of each completed step's declared contract (version, risk tier, tools,
