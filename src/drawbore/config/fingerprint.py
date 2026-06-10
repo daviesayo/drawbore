@@ -12,8 +12,6 @@ static compatibility.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Iterable
 
 from pydantic import BaseModel
@@ -37,6 +35,4 @@ def footprint_fingerprint(facts: Iterable[tuple[str, str, str, str]]) -> str:
     type) so this module keeps no dependency on ``authority`` — same canonical-JSON
     + full-SHA-256 scheme as ``schema_fingerprint``.
     """
-    rows = sorted([list(t) for t in facts])
-    canonical = json.dumps(rows, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_fingerprint(sorted([list(t) for t in facts]))

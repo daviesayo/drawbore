@@ -14,26 +14,20 @@ class _Order(BaseModel):
 
 
 def test_schema_fingerprint_golden_bytes():
-    # Recorded from the pre-refactor implementation. If this fails after a
-    # refactor, the canonical form changed — that is a regression, not a
-    # test to update.
-    import hashlib, json
-
-    canonical = json.dumps(
-        _Order.model_json_schema(), sort_keys=True, separators=(",", ":")
+    # Pinned literal — recorded from the original implementation.
+    # If this fails after a refactor, the canonical form changed — that is a
+    # regression, not a test to update.
+    assert schema_fingerprint(_Order) == (
+        "sha256:79511b14725f07e04768ed4cba63aaa7566577ef22c293bb4aba4689039cf1a4"
     )
-    expected = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    assert schema_fingerprint(_Order) == expected
 
 
 def test_footprint_fingerprint_golden_bytes():
-    import hashlib, json
-
+    # Pinned literal — recorded from the original implementation.
     facts = [("a", "tool", "t1", "read"), ("b", "tool", "t2", "write")]
-    rows = sorted([list(t) for t in facts])
-    canonical = json.dumps(rows, separators=(",", ":"))
-    expected = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    assert footprint_fingerprint(facts) == expected
+    assert footprint_fingerprint(facts) == (
+        "sha256:80eba630acd86befa5197fd1c2233885970373d91f4dc19f5e738bef1fb3580e"
+    )
 
 
 def test_canonical_fingerprint_matches_schema_fingerprint_algorithm():
