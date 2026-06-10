@@ -1,0 +1,28 @@
+---
+title: "Example: tiny pipeline"
+description: "The smallest Drawbore pipeline — two typed deterministic steps, run in test mode."
+---
+
+The tiny pipeline is the smallest useful Drawbore pipeline: two deterministic,
+typed steps with no model and no tools. Use it to see the shape of a pipeline and
+how `pipeline.test_mode()` runs the real safety layer.
+
+Full tested source: `examples/tiny_pipeline/pipeline.py` (test in
+`examples/tiny_pipeline/test_tiny_pipeline.py`).
+
+```python
+from drawbore import agent, Pipeline
+
+@agent(name="normalize", input=Payment, output=Normalized)
+async def normalize(p: Payment) -> Normalized:
+    return Normalized(dollars=p.cents / 100)
+```
+
+## Run
+
+```bash
+pytest examples/tiny_pipeline/test_tiny_pipeline.py
+```
+
+See the [Pipelines guide](/docs/guide/pipelines) for fan-in and `From(...)`
+bindings, then [Quickstart](/docs/quickstart) to assemble your own.

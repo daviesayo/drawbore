@@ -1,0 +1,56 @@
+---
+title: "JSON config: the pipeline as a reviewable manifest"
+description: "Drawbore pipelines round-trip to and from a JSON manifest that is the source of truth for shape and policy — code supplies the handlers, runtime supplies the stores and engine, and from_json fails closed on any drift."
+---
+
+A Drawbore pipeline's *shape and policy* — its steps, agent declarations, bindings,
+versions, escalation policy, confidence threshold, and per-step evidence policy —
+can live in a JSON manifest. The manifest is the durable, reviewable source of
+truth. Code still supplies the executable agent functions and tool handlers;
+runtime still supplies the evidence store and the engine. `from_json` resolves the
+manifest's symbolic agent references against your live `Agent` objects and **fails
+closed** on anything missing, drifting, or inconsistent.
+
+You resolve references through an explicit `AgentCatalog` — a bidirectional
+`ref ↔ Agent` map, so both export and import are deterministic:
+
+```python
+from drawbore.config import AgentCatalog, to_json, from_json
+
+catalog = AgentCatalog()
+catalog.register("examples.remittance:screen_transaction", screen_transaction)
+catalog.register("examples.remittance:fetch_transaction", fetch_transaction)
+
+# Export a live pipeline to a reviewable manifest:
+manifest = to_json(pipeline, agents=catalog)
+
+# Rebuild a pipeline from a reviewed manifest:
+pipeline = from_json(manifest, agents=catalog, registry=registry)
+```
+
+The manifest records what each agent is *expected* to be — its version, risk tier,
+declared tools, model/fallback/instructions, and a SHA-256 fingerprint of its input
+and output schemas. If the resolved code disagrees with the manifest, `from_json`
+raises `ConfigResolutionError` rather than silently running drifted code:
+
+```
+agent 'screen_transaction' version drift: config 1.0.0, resolved 1.1.0
+```
+
+Each step declares an explicit, tagged input mode so the manifest can never be
+ambiguous about how a step is fed:
+
+- `{"source": "initial"}` — the first step, fed the pipeline's initial input.
+- `{"source": "previous", "agent": "fetch_transaction"}` — fed the immediate
+  predecessor's whole output.
+- `{"bindings": {"transaction": {"from": "fetch_transaction.transaction"}}}` — fed
+  field-level bindings, which run the same static type check as `Pipeline.add`.
+
+`depends_on` is emitted explicitly and is not allowed to lie about the input mode;
+export rejects a live pipeline whose `depends_on` disagrees with its steps.
+
+What the manifest does **not** contain is just as important: no agent functions, no
+tool handlers, no engine, no gateway, no evidence store, no credentials. Config is
+the contract for constructing a pipeline — not a serialized running system. Agent
+names are unique within a pipeline; literal input bindings and engine/runtime knobs
+(such as a model-turn budget) are not part of the JSON config contract.

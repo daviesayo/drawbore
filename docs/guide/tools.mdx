@@ -1,0 +1,66 @@
+---
+title: "Tools"
+description: "Give an agent narrow, audited access to the outside world."
+---
+
+An agent is **dumb on purpose**. When it needs to reach the outside world — read a
+record, call an API — it does so through a **tool**, and only a tool it explicitly
+declared. Every tool call passes through a proxy that checks a single-use
+permission, enforces scope, logs the call, and stops runaway loops.
+
+## Register a tool
+
+```python
+from drawbore.tools import ToolRegistry
+
+registry = ToolRegistry()
+
+async def read_transaction(args):
+    return {"id": args["id"], "amount": 100.0, "currency": "USD"}
+
+registry.register_tool("transactions_db.read_transaction", read_transaction)
+```
+
+## The default registry is process-global
+
+A `Pipeline` built without `registry=` uses a module-level default registry.
+Tools registered on it persist for the process lifetime — convenient in a
+script, a contamination hazard in a test suite or long-lived service. Prefer a
+fresh `ToolRegistry()` per pipeline (as every example in this guide does) and
+pass it explicitly: `Pipeline(name=..., registry=registry)`.
+
+## Declare it on an agent
+
+The agent lists exactly the tools it may use. It receives a `tools` object that
+exposes **only** those tools — nothing else.
+
+```python
+from drawbore import agent
+from drawbore.tools import ToolContext
+
+@agent(input=TxQuery, output=Tx, tools=["transactions_db.read_transaction"])
+async def retrieve(query: TxQuery, tools: ToolContext) -> Tx:
+    row = await tools.call("transactions_db.read_transaction", {"id": query.id})
+    return Tx(**row)
+```
+
+## What the framework guarantees
+
+- **Least privilege.** Calling a tool the agent did not declare is refused. The
+  agent never holds a credential or the real handler — only a way to ask.
+- **Single-use permission.** Each call mints a fresh, one-time, non-transferable
+  token scoped to that tool and that run. It cannot be saved, copied, or reused.
+- **A single chokepoint.** There is no path from an agent to a tool that skips
+  the proxy. Every call is logged (what tool, when, hashes of input and output).
+- **No runaway loops.** If an agent calls the same tool too many times in one
+  run, the circuit breaker stops it — the loop dies here, not on your bill.
+
+## Register a pipeline against a registry
+
+```python
+from drawbore import Pipeline
+
+pipeline = Pipeline(name="confirm", registry=registry)
+pipeline.add(retrieve)   # rejected at this line if 'retrieve' declares a tool
+                         # that isn't registered
+```

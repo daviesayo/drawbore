@@ -1,0 +1,72 @@
+"""The model-call gateway.
+
+``LLMGateway`` is the ABC; ``LiteLLMGateway`` is the first implementation, calling
+LiteLLM's async completion across a non-streaming fallback chain. Bifrost (the
+regulated upgrade path) would be another implementation of the same ABC.
+
+Non-streaming only: Drawbore-owned buffer-and-replay streaming continuity is
+deferred. Fallback is request-time completion-with-fallback, NOT mid-stream replay.
+"""
+
+from __future__ import annotations
+
+import json
+from abc import ABC, abstractmethod
+
+import litellm
+
+from .errors import LLMError, ModelUnavailableError
+from .request import ModelRequest, ModelResponse
+
+
+class LLMGateway(ABC):
+    """The model-call boundary. Implementations perform a single non-streaming
+    completion for a :class:`ModelRequest`, walking its fallback chain."""
+
+    @abstractmethod
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        """Complete ``request`` and return the parsed :class:`ModelResponse`."""
+
+
+class LiteLLMGateway(LLMGateway):
+    """Completes via ``litellm.acompletion`` (non-streaming), trying each model in
+    the request's chain in order and advancing on failure."""
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        messages = [
+            {"role": "system", "content": request.system},
+            {"role": "user", "content": request.user},
+        ]
+        last_error: Exception | None = None
+        for model in request.model_chain:
+            try:
+                response = await litellm.acompletion(
+                    model=model, messages=messages, stream=False
+                )
+            except Exception as exc:  # provider/network error → try the next model
+                last_error = exc
+                continue
+            try:
+                content = response["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                # A 200 with an unexpected shape is a contract violation, not a
+                # transport failure — do not fall back, fail closed.
+                raise LLMError(
+                    f"model '{model}' returned an unexpected response shape: {exc}"
+                ) from exc
+            try:
+                output = json.loads(content)
+            except (json.JSONDecodeError, TypeError) as exc:
+                # A 200 with non-JSON content is a contract violation, not a
+                # transport failure — do not fall back, fail closed.
+                raise LLMError(
+                    f"model '{model}' returned non-JSON content: {exc}"
+                ) from exc
+            if not isinstance(output, dict):
+                raise LLMError(
+                    f"model '{model}' returned JSON that is not an object: {type(output).__name__}"
+                )
+            return ModelResponse(output=output, model_used=model, raw_text=content)
+        raise ModelUnavailableError(
+            f"all models failed for chain {request.model_chain}: {last_error}"
+        )

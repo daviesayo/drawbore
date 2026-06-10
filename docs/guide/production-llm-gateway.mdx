@@ -1,0 +1,81 @@
+---
+title: "Production LLM gateway: profiles, providers, and fallback"
+description: "Declare the model capability an agent needs; let a deployment choose the provider. One LLMRuntime owns profile resolution, credential checks, provider-attempt classification, fallback, and audit — without leaking provider detail into your pipeline."
+---
+
+An agent declares the model capability it needs. A deployment decides which provider
+serves it. The agent contract never changes, and no provider detail leaks into the
+pipeline manifest.
+
+```python
+@agent(input=Tx, output=RiskScore,
+       model="profile:judgment",
+       fallback_model="profile:judgment_backup")
+async def score(tx: Tx) -> RiskScore: ...
+```
+
+`model="profile:<name>"` resolves `<name>` from runtime config. Any other string is a
+direct model string (e.g. `"openrouter/anthropic/claude-3-5-sonnet"`). The explicit
+`profile:` prefix is required — Drawbore never guesses whether a bare string is a
+profile or a provider model.
+
+You build the runtime policy as typed data and hand it to the engine:
+
+```python
+from drawbore.llm import LLMRuntime, LLMRuntimeConfig, ModelProfile, ModelTarget, ProviderConfig
+from drawbore.orchestration import ADKEngine
+
+runtime = LLMRuntime(config=LLMRuntimeConfig(
+    profiles={
+        "judgment": ModelProfile(targets=(
+            ModelTarget(provider="openrouter", model="anthropic/claude-3-5-sonnet"),
+            ModelTarget(provider="openai", model="gpt-4o"),
+        )),
+        "judgment_backup": ModelProfile(targets=(
+            ModelTarget(provider="openai", model="gpt-4o"),
+        )),
+    },
+    providers={
+        "openrouter": ProviderConfig(credential_env="OPENROUTER_API_KEY"),
+        "openai": ProviderConfig(credential_env="OPENAI_API_KEY"),
+    },
+))
+result = await pipeline.run(input, engine=ADKEngine(llm_runtime=runtime))
+```
+
+For a minimal live OpenAI smoke from the repository root:
+
+```bash
+PYTHONPATH=src OPENAI_API_KEY=sk-... python3.11 examples/live_openai_smoke/pipeline.py
+```
+
+**One runtime, one authority.** The `LLMRuntime` owns profile resolution, credential
+checks, provider-attempt classification, fallback, and the gateway/model-factory both
+the one-shot and the model+tools paths use. There is never a second config object.
+
+**Fallback is governed, not blind.** A profile lists ordered targets and a closed set
+of `fallback_on` reasons (`timeout`, `rate_limit`, `server_error`,
+`provider_unavailable`). Provider exceptions are classified before any fallback
+decision. Auth/config problems halt with `model_config_error`; a model returning
+unusable output halts with `model_error`; an exhausted chain halts with
+`model_unavailable`. Drawbore never falls back on a broken contract by default.
+
+**Model+tools loops fall back safely.** A model+tools agent resolves through the same
+runtime. Provider failure *before any tool call* may try the next model; once a tool
+has run, a provider failure fails closed — Drawbore will not replay tool side effects
+across providers. Tool failures and denials always abort immediately; fallback never
+lets a model recover around a tripped control.
+
+**The pipeline manifest stays runtime-free.** A reviewed manifest may carry
+`"model": "profile:judgment"` as an agent declaration string. It never carries
+credentials, gateways, engines, or provider routing knobs. Pipeline config says what
+capability the workflow asked for; runtime config says how this deployment serves it.
+
+**The audit is legible.** Each model step records its declared refs, the concrete
+attempts and their outcomes, and the selected model — never API keys, headers, or
+secret values. A compliance reader can tell "we configured this wrong" from
+"OpenRouter timed out" from "the model returned invalid output."
+
+**In tests, nothing calls a provider.** `pipeline.test_mode(...)` resolves `profile:*`
+for real but answers from your mocks; a fake credential checker keeps CI key-free, and
+a missing mock fails closed rather than reaching a live provider.

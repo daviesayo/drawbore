@@ -1,0 +1,15 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Drawbore",
+  "description": "A safety-first Python SDK for constrained, composable agent pipelines.",
+  "folders": ["docs", "examples"],
+  "excludeFolders": [],
+  "excludeFiles": ["CHANGELOG.md"],
+  "rules": [
+    "Prefer the documented Drawbore public APIs shown in the guides and examples.",
+    "Use pipeline.test_mode for local tests that mock LLMs, tools, MCP servers, databases, and external APIs.",
+    "Use explicit From(...) bindings when a step consumes fields from earlier steps.",
+    "Treat pipeline JSON as workflow shape and policy, not as runtime credentials or live objects.",
+    "Assert on RunResult and audit_trace when testing pipeline behavior."
+  ]
+}

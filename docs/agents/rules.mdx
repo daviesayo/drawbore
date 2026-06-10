@@ -1,0 +1,27 @@
+---
+title: "Rules for using Drawbore"
+description: "The load-bearing rules a coding agent should follow when writing Drawbore pipelines."
+---
+
+Follow these when writing Drawbore code. They mirror the framework's guarantees;
+breaking them usually means fighting the framework.
+
+1. **Define typed inputs and outputs.** Every agent takes a Pydantic model and
+   returns one. Let validation halt on a wrong shape — do not catch and continue.
+2. **Use explicit `From(...)` bindings** when a step consumes fields from an
+   earlier step. Do not rely on implicit predecessor passing for fan-in.
+3. **Declare every tool.** An agent may only call tools listed in
+   `@agent(tools=[...])`. Tool calls route through the proxy — never call a tool
+   handler directly.
+4. **Let it halt.** Halt-and-escalate is the only failure behavior. Do not catch
+   a halt to fabricate a partial result — read `RunResult.halt_code`, fix the
+   cause or escalate to a human.
+5. **Test with `pipeline.test_mode(...)`.** Mock models, tools, MCP servers, and
+   external APIs there; the real safety layer still runs. See
+   [Testing Drawbore](/docs/agents/testing-drawbore).
+6. **Treat pipeline JSON as shape and policy**, not as runtime credentials or live
+   objects. Provider/model config lives in the runtime LLM config, not the
+   manifest.
+7. **Assert on `RunResult` and `audit_trace`** when testing behaviour.
+
+For the full rationale, read the [guides](/docs/guide/pipelines).

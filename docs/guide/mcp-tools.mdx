@@ -1,0 +1,134 @@
+---
+title: "MCP tools: scoped access to external servers, safely"
+description: "Register an MCP server with exactly the tools an agent may use; the framework keeps server login separate from per-tool permission, and routes every call through the proxy."
+---
+
+An MCP server is a source of tools — Slack, a database, a search index. Drawbore
+treats an MCP tool exactly like a tool you wrote yourself: the agent declares the
+one tool it needs, and the framework enforces that boundary on every call.
+
+## Register a server with scoped tools
+
+You log in to the *server* once, and you say exactly which of its tools an agent
+may use. Registering the server does **not** hand over everything the server can
+do — only the tools you name are registered.
+
+```python
+from drawbore.tools import ToolRegistry
+from drawbore.mcp import register_mcp_server, FakeMCPClient, MCPToolSpec
+
+registry = ToolRegistry()
+
+# In production you supply a LiveMCPClient (see below); FakeMCPClient is the
+# dependency-free test double — give it the tools the fake server advertises.
+client = FakeMCPClient(tools={
+    "send_message": MCPToolSpec(name="send_message", input_schema={}),
+    "delete_channel": MCPToolSpec(name="delete_channel", input_schema={}),
+})
+
+await register_mcp_server(
+    registry,
+    name="slack",
+    url="https://slack.com/mcp",
+    allowed_tools=["send_message"],          # one tool, not all of Slack
+    client=client,                           # the transport you supply
+)
+```
+
+This registers a single tool, `mcp://slack/send_message`. The server's other
+tools (say, `delete_channel`) are never registered, so no agent can reach them.
+
+## Declare and use the tool
+
+An MCP tool is just a tool. The agent lists it like any other, and reaches it
+through the same `tools` object — nothing about the agent body changes.
+
+```python
+from pydantic import BaseModel
+from drawbore import agent
+from drawbore.tools import ToolContext
+
+class Event(BaseModel):
+    message: str
+
+class Notified(BaseModel):
+    delivered: bool
+
+@agent(name="notifier", input=Event, output=Notified,
+       tools=["mcp://slack/send_message"])   # exactly one tool, one server
+async def notifier(event: Event, tools: ToolContext) -> Notified:
+    await tools.call("mcp://slack/send_message", {"text": event.message})
+    return Notified(delivered=True)
+```
+
+## Two different permissions
+
+Drawbore keeps two things most systems conflate:
+
+- **Logging in to the server** happens once, at registration, with server-level
+  OAuth (`OAuthConfig`). Your agent never sees those credentials.
+- **Permission to use a tool** is enforced on every call, by the proxy, with a
+  one-time token scoped to that exact tool. An agent that declared
+  `send_message` cannot call `delete_channel` — even though the same server login
+  would allow it. This is what stops a compromised step from roaming.
+
+```python
+from drawbore.mcp import OAuthConfig, register_mcp_server
+
+await register_mcp_server(
+    registry,
+    name="slack",
+    url="https://slack.com/mcp",
+    allowed_tools=["send_message"],
+    auth=OAuthConfig(client_id="...", scopes=("chat:write",)),  # server-level grant
+    client=client,
+)
+```
+
+If an MCP tool fails, the run **halts** (and escalates if you attached an
+[escalation policy](/guide/escalation)) with a legible `mcp_error` reason — it
+never proceeds on a failed call.
+
+## Data trust
+
+MCP tools default to `source_trust=UNTRUSTED`: because their data originates outside your
+pipeline, Drawbore marks it untrusted and refuses to pass it to any tool you declare as
+`exfil_capable` — an HTTP write, an outward send, an email relay. This default is the
+data-exfiltration barrier.
+
+If you trust a specific server's data — a read-only internal knowledge base, a company
+index — override per tool:
+
+```python
+from drawbore.tools import TrustLabel
+
+registry.register_mcp_tool("kb:search", handler, source_trust=TrustLabel.TRUSTED)
+```
+
+See [Taint and trust](/guide/taint-and-trust) for the full model: `initial_trust` for
+untrusted-ingest workflows, cross-step propagation, and `When` branch gating.
+
+## Talking to a real server
+
+The live transport ships in the optional `drawbore[mcp]` extra:
+
+```python
+from drawbore.mcp import LiveMCPClient, register_mcp_server
+
+await register_mcp_server(
+    registry,
+    name="slack",
+    url="https://slack.com/mcp",
+    allowed_tools=["send_message"],
+    client=LiveMCPClient(),                   # requires `pip install drawbore[mcp]`
+)
+```
+
+The security model — server login separate from per-tool scope, every call
+through the proxy on a one-time token — is the same whichever client you supply.
+Live server-level OAuth is not yet wired in this release: passing `auth=` to a
+`LiveMCPClient` connection fails closed with a legible `MCPError` rather than
+guessing the transport's auth flow. You supply the client and your server
+credentials; the live OAuth wiring and connection management to real servers are
+part of the managed service. The framework owns the scoping, the per-call token,
+and the failure path.

@@ -1,0 +1,47 @@
+---
+title: "Taint and trust"
+description: "Refuse to exfiltrate untrusted data — the lethal-trifecta breaker (read untrusted data, act on it, send data out) as a runtime guarantee."
+---
+
+**When to use this:** your pipeline ingests data you do not control — a fetched web page, an
+email, an MCP server's response — and also has tools that can send data outward
+(`http_post`, email, an external write). The taint breaker refuses to invoke an
+exfil-capable tool while the current step is handling untrusted data, deterministically and
+without a screener model.
+
+Declare two facts on your tools:
+
+```python
+from drawbore.tools import ToolRegistry
+
+reg = ToolRegistry()
+reg.register_mcp_tool("docs:fetch", handler)                           # untrusted-source by default
+reg.register_tool("http_post", handler, exfil_capable=True)            # a sink
+```
+
+A step's trust scope starts from its inputs; invoking an untrusted-source tool taints the
+step; a downstream step seeded from a tainted output starts untrusted. Any `exfil_capable`
+call under an untrusted scope halts with `taint_violation`. A `When` predicate that reads a
+tainted output halts with `condition_tainted` — untrusted data can never steer control flow.
+
+The initial input is `TRUSTED` by default. For document or email triage, declare it untrusted
+up front:
+
+```python
+from drawbore.tools import TrustLabel
+
+await pipeline.run(initial, initial_trust=TrustLabel.UNTRUSTED)
+```
+
+`exfil_capable` is a whole-tool fact: it gates every operation of that tool. If a tool mixes
+a benign read operation with an outward write, split it into two tools so the read is not
+over-blocked.
+
+**Honest scope.** Taint is whole-object (no field-level declassification yet). The guarantee
+assumes tool calls within a step run one at a time (which is how the runtime executes them),
+so the taint from one call is always visible to the next. Retrieving an untrusted-origin
+payload through `evidence://retrieve` is a known gap (the evidence store does not yet carry
+trust). A green run proves refusal on the paths it exercises; the structural guarantee comes
+from the fact that every tool call passes through one enforcement point.
+
+See the full runnable example at `examples/taint_breaker.py`.

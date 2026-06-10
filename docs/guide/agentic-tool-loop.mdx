@@ -1,0 +1,58 @@
+---
+title: "Agentic tool loop: let the model use tools, safely"
+description: "A model-backed agent that declares tools can call them mid-completion — every call through the proxy and a one-time token, any failure halts, the loop is bounded, and Drawbore validates the final answer."
+---
+
+A model-backed agent can do more than one shot. When it **declares tools**,
+Drawbore runs it as a bounded tool loop: the model calls a tool, sees the result,
+and continues — until it returns a final answer that Drawbore validates against the
+agent's output schema. The orchestration engine is hidden; you write an ordinary
+agent.
+
+```python
+from drawbore import Pipeline, agent
+from drawbore.orchestration import ADKEngine
+from drawbore.llm import LLMRuntime, LLMRuntimeConfig, ModelProfile, ModelTarget, ProviderConfig
+
+@agent(name="screen", input=Transactions, output=Verdict, model="gpt-4o", tools=["risk_lookup"])
+async def screen(txns, tools):
+    ...  # the function body is not run on the model path
+
+runtime = LLMRuntime(config=LLMRuntimeConfig(
+    profiles={"default": ModelProfile(targets=(
+        ModelTarget(provider="openai", model="gpt-4o"),
+    ))},
+    providers={"openai": ProviderConfig(credential_env="OPENAI_API_KEY")},
+))
+
+p = Pipeline(name="aml", registry=registry)
+p.add(screen)
+result = await p.run(transactions, engine=ADKEngine(llm_runtime=runtime))
+```
+
+Every tool call the model makes goes through the same proxy and single-use token as
+any other Drawbore tool — only the agent's *declared* tools exist, and the call is
+traced and audited. The model never gets to route around a control:
+
+- **Any tool failure or denial halts** the step and escalates with a legible reason
+  — the loop does not "recover" around a tripped control.
+- **The loop is bounded** (`max_llm_calls`, default 8) — a runaway loop halts.
+- **Drawbore owns the answer** — the model's final output is parsed and validated
+  against your output model; a non-JSON answer fails closed.
+
+The number of model turns and every tool call are in the audit trail:
+
+```python
+step = result.audit_trace.step_records[0]
+print(step.model_turns)   # e.g. 3
+print(step.tool_calls)    # ('risk_lookup (invoke) -> ok', ...)
+```
+
+This composes with evidence compression: a compressed step's model can retrieve the
+full original mid-loop with the `evidence://retrieve` tool — scoped by the proxy, a
+handle is not authority.
+
+You supply a model-capable engine (today, `ADKEngine`). A model-backed agent run on
+an engine with no model path fails closed with a legible error. Model fallback
+inside the loop, streaming, and parallel tool calls in one turn are not in Phase 1
+(a loop agent uses its primary model; declaring `fallback_model` fails closed).

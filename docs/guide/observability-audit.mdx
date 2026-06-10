@@ -1,0 +1,72 @@
+---
+title: "Observability and audit: see what every run did"
+description: "Drawbore emits OTel GenAI-semconv spans for every tool call, agent step, and model call, and produces an append-only audit record a regulator can read — all in the open-source core."
+---
+
+Drawbore is the telemetry source; you own the drain. Every run emits OpenTelemetry
+spans following the GenAI Semantic Conventions, and produces a separate,
+append-only audit record. Both are in the MIT core and always on.
+
+## Spans: the operational view
+
+Three span types, at the points that matter:
+
+- `execute_tool {tool}` — every tool call, at the proxy (the one chokepoint).
+- `invoke_agent {agent}` — every step, tagged with the agent name, version, risk
+  tier, and run id.
+- `chat {model}` — every model call, with the requested and actual model.
+
+Each span carries the run id, step, and input/output hashes, so you can answer
+"what happened in run X" by querying the `drawbore.run_id` attribute. You don't
+configure anything to get spans — they emit to whatever OpenTelemetry provider is
+configured in your process.
+
+## Send spans to your drain
+
+To export to Axiom, Datadog, Grafana, Honeycomb, or any OTLP backend, install the
+optional extra and point Drawbore at your endpoint:
+
+```python
+from drawbore.observability import configure_otlp_export
+
+configure_otlp_export("https://otlp.your-drain.example", headers={"authorization": "..."})
+# requires `pip install drawbore[otlp]`
+```
+
+Without the extra, this fails closed with a clear error telling you to install it —
+the framework never silently drops your telemetry config.
+
+## Audit: the compliance view
+
+Separate from spans, every run produces an immutable audit record — a trace a
+compliance officer can read without an engineer:
+
+```python
+from drawbore.audit import InMemoryAuditSink
+
+my_sink = InMemoryAuditSink()
+result = await pipeline.run(transaction, audit=my_sink, tenant_id="acme")
+
+print(result.audit_trace.legible())
+# Run 'run-1' of pipeline 'remittance' v1.0.0 (tenant acme): completed.
+# Steps completed: 4.
+# Escalations: 0.
+# Schema violations: 0.
+# - step 0 'validate' v1.0.0: ok
+# ...
+```
+
+`result.audit_trace` is always set on a returned run (`.steps`, `.escalations`,
+`.schema_violations`, and per-step detail). Supply an `AuditSink` to persist
+records; the in-process `InMemoryAuditSink` (from `drawbore.audit`) is the default
+for tests and local runs.
+
+When a run can't proceed — a [halt or escalation](/guide/escalation) — the same
+record names the step it stopped at and why, so the trace reads end-to-end whether
+the run completed or not.
+
+Spans can be sampled and dropped by your drain; the audit record is not — it is the
+defensible answer to "show me exactly what happened to transaction X." The
+open-source core gives you the basic, readable, exportable log; tamper-evident,
+cryptographically signed, compliance-formatted export is part of the managed
+service.

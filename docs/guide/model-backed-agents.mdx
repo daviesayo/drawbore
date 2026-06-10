@@ -1,0 +1,80 @@
+---
+title: "Model-backed agents: calling an LLM, safely"
+description: "Give an agent a model and a fallback chain; the framework owns the request, the validation, and the failure path."
+---
+
+Most Drawbore agents are deterministic dumb pipes. When an agent genuinely needs a
+language model, you give it one — and the framework keeps ownership of the request,
+the output validation, and what happens when the model fails.
+
+## Declare a model
+
+```python
+from pydantic import BaseModel
+from drawbore import agent
+
+class Tx(BaseModel):
+    amount: int
+
+class RiskScore(BaseModel):
+    risk: str
+
+@agent(
+    input=Tx,
+    output=RiskScore,
+    model="profile:judgment",
+    instructions="Assess the transaction's risk.",
+)
+async def score(tx: Tx) -> RiskScore:
+    ...   # a model-backed agent's body is not run — the model produces the output
+```
+
+An agent with no `model` is a deterministic agent and runs your function as before.
+
+## Run it through the runtime
+
+The model call goes through the `LLMRuntime` you provide. The runtime owns
+provider profile resolution, credential checks, provider-attempt fallback, and
+audit. The framework still builds the request and validates the model's output
+against `RiskScore` before anything downstream sees it.
+
+```python
+from drawbore import Pipeline
+from drawbore.orchestration import ADKEngine
+from drawbore.llm import LLMRuntime, LLMRuntimeConfig, ModelProfile, ModelTarget, ProviderConfig
+
+pipeline = Pipeline(name="screening")
+pipeline.add(score)
+
+runtime = LLMRuntime(config=LLMRuntimeConfig(
+    profiles={
+        "judgment": ModelProfile(targets=(
+            ModelTarget(provider="openai", model="gpt-4o-mini"),
+        )),
+    },
+    providers={
+        "openai": ProviderConfig(credential_env="OPENAI_API_KEY"),
+    },
+))
+
+result = await pipeline.run(tx, engine=ADKEngine(llm_runtime=runtime))
+```
+
+## What the framework owns
+
+- **The request.** Drawbore builds the prompt — your `instructions` plus a strict
+  JSON contract for the output — and sends the input as data, never as commands.
+- **The fallback.** If a profile lists multiple provider targets, the runtime can
+  try the next target for configured provider failures. If the whole chain fails,
+  the run **halts** (and escalates if you attached an
+  [escalation policy](/guide/escalation)) — it never proceeds on a missing answer.
+- **The validation.** The model must return JSON matching the output model.
+  Anything else halts at the boundary, exactly like a tool returning the wrong shape.
+
+You supply runtime policy, and real provider credentials and API keys are your
+concern; the framework owns the request, the validation, and the failure path,
+not your model keys. For the smallest live run, see the
+[live OpenAI smoke example](/docs/examples/live-openai-smoke).
+
+Streaming responses are intentionally not part of this release; Drawbore ships
+non-streaming completion with fallback first.

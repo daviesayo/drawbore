@@ -1,0 +1,50 @@
+---
+title: "Risk branch"
+description: "Branch on a typed risk level with When, converge with an exactly_one Join, and read the skip explanation in the audit trace."
+---
+
+The canonical branch-and-join pipeline: a risk scorer routes a transaction to
+enhanced due diligence OR standard review; an `exactly_one` join feeds the
+writer. The path not taken is recorded as a skip in the audit trace — absence is
+always explained.
+
+```python
+from pydantic import BaseModel
+from drawbore import agent, Pipeline, From, When, Join
+
+class Txn(BaseModel):
+    amount: int
+
+class Risk(BaseModel):
+    level: str
+
+class Review(BaseModel):
+    verdict: str
+
+@agent(name="risk", input=Txn, output=Risk)
+async def risk(v: Txn) -> Risk:
+    return Risk(level="high" if v.amount > 10000 else "low")
+
+p = Pipeline(name="risk_branch")
+p.add(risk)
+p.add(enhanced_dd, inputs={"level": From("risk.level")},
+      when=When("risk.level", equals="high"))
+p.add(standard_review, inputs={"level": From("risk.level")},
+      when=When("risk.level", in_=("low", "medium")))
+p.add(Join("review", sources=["enhanced_dd", "standard_review"],
+           policy="exactly_one", output=Review))
+p.add(writer, inputs={"verdict": From("review.verdict")})
+```
+
+The full runnable version (including the `enhanced_dd` / `standard_review` /
+`writer` agents and its test) is
+[`examples/risk_branch/`](https://github.com/daviesayo/drawbore/tree/main/examples/risk_branch).
+
+Run it:
+
+```bash
+pytest examples/risk_branch/test_risk_branch.py
+```
+
+See the [Pipelines guide](/docs/guide/pipelines) for `When` operators and join
+policies.

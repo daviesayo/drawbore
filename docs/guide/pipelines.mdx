@@ -1,0 +1,81 @@
+---
+title: "Pipelines"
+description: "Compose deterministic agents into a typed, schema-checked pipeline."
+---
+
+A **pipeline** is an ordered set of **agents**. Each agent declares a typed
+input and output. Drawbore validates the data crossing every boundary, so a step
+can never receive or emit the wrong shape of data.
+
+## Define agents
+
+```python
+from pydantic import BaseModel
+from drawbore import agent
+
+class Seed(BaseModel):
+    value: int
+
+class Doubled(BaseModel):
+    doubled: int
+
+@agent(input=Seed, output=Doubled)
+async def double(seed: Seed) -> Doubled:
+    return Doubled(doubled=seed.value * 2)
+```
+
+## Compose and run
+
+```python
+from drawbore import Pipeline, From
+
+pipeline = Pipeline(name="example")
+pipeline.add(double)
+
+result = await pipeline.run(Seed(value=5))
+assert result.status == "completed"
+assert result.outputs["double"].doubled == 10
+```
+
+## Bind data between steps
+
+When a step needs fields from earlier steps, bind them explicitly with `From`:
+
+```python
+pipeline.add(decide, inputs={"doubled": From("double.doubled")})
+```
+
+## Branch and join
+
+Gate a step on an upstream field with `When` — the step runs only when the condition
+holds; otherwise it is skipped and the skip is explained in the audit trace:
+
+```python
+from drawbore import Pipeline, From, When, Join
+
+pipeline.add(enhanced_dd, inputs={"level": From("risk.level")},
+             when=When("risk.level", equals="high"))
+pipeline.add(standard_review, inputs={"level": From("risk.level")},
+             when=When("risk.level", in_=("low", "medium")))
+```
+
+Merge mutually-exclusive branches with an explicit `Join`:
+
+```python
+pipeline.add(Join("review", sources=["enhanced_dd", "standard_review"],
+                  policy="exactly_one", output=Review))
+pipeline.add(writer, inputs={"verdict": From("review.verdict")})
+```
+
+`When` supports `equals`, `in_`, `is_true`, `gt`, `lt`. For richer logic, compute a
+typed field in a routing step and gate on it. Join policies: `exactly_one`,
+`first_by_priority`, `all_present`. See the tested
+`examples/risk_branch/` for a full runnable branch-and-join pipeline.
+
+## What Drawbore guarantees
+
+- **Static check** (when you build the pipeline): every binding's source type
+  must match the target type, or the pipeline is rejected before it runs.
+- **Runtime check** (at every step): inputs and outputs are validated; on any
+  mismatch the run **halts** and reports exactly which step failed and why —
+  it does not continue with bad data.

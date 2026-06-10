@@ -1,0 +1,26 @@
+---
+title: "Retrieving Drawbore docs with Context7"
+description: "How a coding agent fetches current Drawbore documentation through Context7 and llms.txt."
+---
+
+Drawbore publishes its public documentation for retrieval. A coding agent can pull
+current docs through Context7 or the site's `llms.txt`, rather than relying on
+training data.
+
+## When to use this
+
+Before writing Drawbore code, fetch the current guides and reference so you use the
+documented public APIs and the latest patterns.
+
+## How
+
+- **Context7:** resolve the Drawbore library, then query the docs for the topic you
+  need (e.g. "pipeline.test_mode usage", "From bindings", "model profiles").
+- **llms.txt:** the docs site exposes `llms.txt` / `llms-full.txt` listing the
+  public pages; fetch the page whose title matches your topic.
+
+Each public page states its topic in the title, says when to use it in the first
+paragraph, and names common mistakes — so a retrieved page is usable on its own.
+
+Prefer the documented public APIs shown in the [guides](/docs/guide/pipelines) and
+examples.

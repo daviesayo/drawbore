@@ -1,0 +1,57 @@
+---
+title: "Quickstart"
+description: "Install Drawbore and run your first typed, schema-checked pipeline."
+---
+
+This page gets you from install to a running pipeline. For a deeper tour, read the
+[Pipelines guide](/docs/guide/pipelines).
+
+## Install
+
+```bash
+pip install drawbore
+```
+
+## Define a tiny pipeline
+
+A pipeline is an ordered set of agents with typed inputs and outputs. Here a
+single deterministic agent normalizes an amount:
+
+```python
+from pydantic import BaseModel
+from drawbore import agent, Pipeline
+
+class Payment(BaseModel):
+    cents: int
+
+class Normalized(BaseModel):
+    dollars: float
+
+@agent(name="normalize", input=Payment, output=Normalized)
+async def normalize(p: Payment) -> Normalized:
+    return Normalized(dollars=p.cents / 100)
+
+pipeline = Pipeline(name="payments", version="1.0.0")
+pipeline.add(normalize)
+```
+
+## Run it in test mode
+
+`pipeline.test_mode(...)` runs the real safety layer with the outside world
+mocked. This tiny pipeline has no model or tools, so no mocks are needed:
+
+```python
+async with pipeline.test_mode() as tp:
+    result = await tp.run(Payment(cents=2500))
+
+assert result.status == "completed"
+```
+
+`result.audit_trace.legible()` renders a regulator-readable record of the run.
+
+## Next steps
+
+- [Pipelines](/docs/guide/pipelines) — fan-in and `From(...)` bindings.
+- [Tools](/docs/guide/tools) — give an agent narrow, audited tool access.
+- [Model-backed agents](/docs/guide/model-backed-agents) — add an LLM step.
+- [Local testing](/docs/guide/local-testing) — mock models, tools, and MCP.

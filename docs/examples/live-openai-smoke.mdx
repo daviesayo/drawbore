@@ -1,0 +1,34 @@
+---
+title: "Example: live OpenAI smoke"
+description: "Call a real OpenAI model through Drawbore's production LLMRuntime path."
+---
+
+This is the smallest live-provider Drawbore example. It calls OpenAI for real, so
+run it only when you want to spend a provider request.
+
+Full source: `examples/live_openai_smoke/pipeline.py` (wiring guard in
+`examples/live_openai_smoke/test_live_openai_smoke.py`).
+
+```python
+runtime = LLMRuntime(config=LLMRuntimeConfig(
+    profiles={
+        "judgment": ModelProfile(targets=(
+            ModelTarget(provider="openai", model="gpt-4o-mini"),
+        )),
+    },
+    providers={
+        "openai": ProviderConfig(credential_env="OPENAI_API_KEY"),
+    },
+))
+result = await pipeline.run(input, engine=ADKEngine(llm_runtime=runtime))
+```
+
+## Run
+
+```bash
+PYTHONPATH=src OPENAI_API_KEY=sk-... python3.11 examples/live_openai_smoke/pipeline.py
+```
+
+The agent still declares only `model="profile:judgment"`. Provider choice,
+credential lookup, and fallback policy live in runtime config, not in the
+pipeline manifest.

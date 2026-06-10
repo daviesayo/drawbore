@@ -1,0 +1,31 @@
+---
+title: "Testing Drawbore pipelines"
+description: "Write tests with pipeline.test_mode — mock the outside world while every safety control runs for real."
+---
+
+Use `pipeline.test_mode(...)` to test a pipeline locally. It mocks models, tools,
+MCP servers, and external APIs while the real Drawbore safety layer (schema
+validation, the tool proxy, halt-and-escalate, audit) runs unchanged.
+
+## When to use this
+
+Always, for pipeline tests. Never call a live provider or external service in a
+unit test — a missing mock fails closed with a clear error rather than reaching
+the network.
+
+## Pattern
+
+```python
+async with pipeline.test_mode(
+    mock_model_responses={"scorer": {"risk": "low"}},
+    mock_tools={"transactions_db.read_transaction": {"amount": 100}},
+) as tp:
+    result = await tp.run(Initial(...))
+    assert result.status == "completed"
+    assert "low" in result.audit_trace.legible()
+```
+
+Assert on `result.status`, the typed final output, and `result.audit_trace`.
+
+See the [Local testing guide](/docs/guide/local-testing) for the full surface
+(loop scripts, evidence stores, escalation, and fallback).

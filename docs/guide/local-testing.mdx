@@ -1,0 +1,60 @@
+---
+title: "Local test mode: fake the outside world, not Drawbore"
+description: "pipeline.test_mode runs your pipeline locally with mocked tools, model responses, and loop scripts — while every Drawbore safety control runs for real through the same code path as production."
+---
+
+`pipeline.test_mode(...)` lets you run a Drawbore pipeline locally without calling
+real LLMs, databases, MCP servers, or external APIs. The rule is simple: **test mode
+fakes the outside world; it does not fake Drawbore.** Schema enforcement, context
+isolation, the tool proxy and JIT tokens, circuit breakers, evidence policy, audit
+records, escalation, identity gates, and the agentic tool loop all run through the
+SAME `Pipeline.run` path as production. Your mocks supply controlled externals;
+Drawbore's safety machinery decides whether the run succeeds.
+
+```python
+from drawbore.testing import call, final
+
+async with pipeline.test_mode(
+    mock_tools={"transactions_db.read_transaction": {"amount": 100}},
+    mock_model_responses={"risk_scorer": {"risk": "low", "confidence": 0.94}},
+    mock_loop_scripts={"resolver": [call("lookup", {"id": "t1"}), final({"answer": "ok"})]},
+) as test:
+    result = await test.run(TransactionInput(transaction_id="test_123"))
+
+assert result.status == "completed"
+audit = result.audit_trace            # production-shaped audit, your primary assertion surface
+```
+
+Mocks are scoped to the harness — they are registered in a per-test registry overlay
+that **preserves each tool's allowed operations, schema, and kind**, and every mocked
+call still flows through `ToolProxy.invoke` with a single-use token and the real
+circuit breaker. Nothing is installed globally; mocks vanish when the `async with`
+block exits.
+
+- **`mock_tools`** — keyed by tool ref. A value may be a static result, a sync or
+  async callable `(args) -> result`, or a sequence consumed in order.
+- **`mock_model_responses`** — keyed by **agent name** (not model name): a dict, a
+  Pydantic output instance, a sequence, or a callable receiving the `ModelRequest`.
+- **`mock_loop_scripts`** — keyed by agent name for model+tools agents: `call(...)`,
+  `final(...)`, `text(...)`, and `multi_call(...)` describe scripted model turns for
+  the real agentic loop.
+
+Test mode **fails closed**. A declared tool with no mock, a missing model response,
+or a missing loop script raises a legible `TestingError` and halts — it never falls
+through to a live provider. A declared tool may use its real handler only when you
+list it in `allow_real_tools=(...)`. The one Drawbore-owned exception is
+`evidence://retrieve`: it is automatically bound to the test evidence store and runs
+through the proxy like any other tool — no mock required.
+
+Evidence behavior is real: policy `disabled`/`simulate`/`compress` modes, stored
+originals, handles, token counts, and retrieval policy all behave exactly as in
+production, and the decisions appear in the audit trace.
+
+Config-loaded pipelines compose too: `from_json(manifest, agents=catalog).test_mode(...)`
+runs a reviewed manifest with all config drift checks already enforced — test mode never
+weakens them.
+
+What test mode is **not**: it is not a second runtime. There is no toy execution path
+that bypasses the proxy, fakes audit records, or skips evidence policy. The harness
+supplies externals; Drawbore decides the outcome — so a green local test means the
+real safety layer accepted the run.

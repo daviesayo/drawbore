@@ -1,0 +1,28 @@
+---
+title: "Examples"
+description: "Runnable, tested Drawbore pipelines you can copy and adapt."
+---
+
+Every example here is a real pipeline under `examples/` in the repository. Some
+run through `pipeline.test_mode(...)` with synthetic data: no live provider,
+database, or network. Live OpenAI examples are clearly marked because they make
+real provider calls.
+
+## Available examples
+
+- [Tiny pipeline](/docs/examples/tiny-pipeline) — the smallest pipeline: two typed
+  deterministic steps. Start here.
+- [Number chain](/docs/examples/number-chain) — three live OpenAI-backed agents,
+  each receiving the previous agent's typed output, with the audit printed at the
+  end.
+- [Remittance validation](/docs/examples/remittance-validation) — a high-stakes
+  pipeline: a tool-backed lookup, a confidence-gated model step, and a typed
+  confirmation.
+- [Live OpenAI smoke](/docs/examples/live-openai-smoke) — the minimal real-provider
+  run through `LLMRuntime`, using `OPENAI_API_KEY`.
+
+More high-stakes examples (healthcare triage, legal-contract trigger, insurance
+claim triage) are planned.
+
+Each page links to its tested source. The source is the truth — if a snippet here
+ever drifts, trust the file under `examples/`.

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Drawbore",
+  "colors": {
+    "primary": "#1f6feb"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "docs/index",
+          "docs/quickstart"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "docs/guide/pipelines",
+          "docs/guide/tools",
+          "docs/guide/model-backed-agents",
+          "docs/guide/agentic-tool-loop",
+          "docs/guide/mcp-tools",
+          "docs/guide/local-testing",
+          "docs/guide/json-config",
+          "docs/guide/evidence-compression",
+          "docs/guide/escalation",
+          "docs/guide/observability-audit",
+          "docs/guide/identity-versioning",
+          "docs/guide/reliability",
+          "docs/guide/production-llm-gateway",
+          "docs/guide/taint-and-trust",
+          "docs/guide/safety-gauntlet",
+          "docs/guide/authority-regression"
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": [
+          "docs/examples/index",
+          "docs/examples/tiny-pipeline",
+          "docs/examples/number-chain",
+          "docs/examples/remittance-validation",
+          "docs/examples/risk-branch",
+          "docs/examples/live-openai-smoke"
+        ]
+      },
+      {
+        "group": "For coding agents",
+        "pages": [
+          "docs/agents/index",
+          "docs/agents/rules",
+          "docs/agents/common-mistakes",
+          "docs/agents/testing-drawbore",
+          "docs/agents/context7"
+        ]
+      }
+    ]
+  }
+}

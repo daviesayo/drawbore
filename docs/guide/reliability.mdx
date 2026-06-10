@@ -1,0 +1,46 @@
+---
+title: "Reliability: isolation, halting, and resume"
+description: "How Drawbore keeps a high-stakes run safe and recoverable."
+---
+
+Drawbore is built to **stop safely**, not to guess. Three guarantees:
+
+## Each agent sees only what it was given
+
+The framework constructs every agent's input from explicit bindings — it cannot
+receive fields it was not handed. External input is bounded in size and depth
+before the run starts, and is always treated as **data**, never as instructions.
+
+## On any failure, the run halts
+
+A schema mismatch, a blocked tool call, a runaway loop, or an agent error all
+stop the run and report exactly which step failed and why. Drawbore never
+continues with a partial or degraded result unless a pipeline explicitly opts in.
+
+```python
+result = await pipeline.run(Order(id="A-1"))
+if result.status == "halted":
+    print(result.halted_at, result.reason)   # e.g. "charge", "circuit_breaker: ..."
+```
+
+## A halted run can resume where it stopped
+
+Give the run a stable id and a checkpoint store. Steps that already succeeded are
+skipped on the next attempt — the run picks up from the first incomplete step.
+The returned `RunResult` echoes the resolved `run_id`, so a defaulted run is
+still inspectable after the fact.
+
+```python
+from drawbore.state import InMemoryCheckpointStore
+
+store = InMemoryCheckpointStore()
+first = await pipeline.run(order, run_id="order-A-1", checkpoints=store)   # halts at step 3
+again = await pipeline.run(order, run_id="order-A-1", checkpoints=store)   # resumes at step 3
+```
+
+## Branching on a halt
+
+`RunResult.halt_code` carries one stable token per halted run — the same closed
+vocabulary the audit trail uses (`schema_violation`, `tool_access`,
+`circuit_breaker`, `condition_tainted`, ...). Branch on `halt_code`, never on the
+prose in `reason`; the prose is for humans and may be reworded.

@@ -1,0 +1,33 @@
+---
+title: "Common mistakes"
+description: "Mistakes coding agents make with Drawbore, and the correct pattern for each."
+---
+
+Each entry names a mistake and the correct approach.
+
+### Catching validation errors to "keep going"
+Wrong: wrapping a step in try/except to swallow a schema violation. Right: let the
+boundary halt; fix the data or the schema. Drawbore halts on purpose.
+
+### Calling a tool that wasn't declared
+Wrong: invoking a tool the agent didn't list. Right: declare it in
+`@agent(tools=[...])`; the proxy blocks undeclared calls.
+
+### Relying on implicit data flow for fan-in
+Wrong: assuming a later step automatically sees an earlier step's output. Right:
+use `From("agent.field")` bindings. See [Pipelines](/docs/guide/pipelines).
+
+### Putting provider keys in pipeline JSON
+Wrong: serializing credentials or a gateway into the manifest. Right: keep
+`model="profile:..."` in the manifest; configure providers in the runtime LLM
+config. See [Model-backed agents](/docs/guide/model-backed-agents).
+
+### Testing against live models or tools
+Wrong: hitting a real provider in tests. Right: use `pipeline.test_mode(...)` with
+mocked models and tools — the safety layer runs for real. See
+[Testing Drawbore](/docs/agents/testing-drawbore).
+
+### Producing partial results on failure
+Wrong: returning a half-finished result on failure. Right: let the run halt and
+escalate — Drawbore has no partial-results mode; a halted run's `halt_code` and
+escalation package tell a human exactly what stopped and why.

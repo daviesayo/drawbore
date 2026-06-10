@@ -1,0 +1,81 @@
+---
+title: "Identity and versioning: who owns an agent, and how it changes"
+description: "Every agent has a human owner and a lifecycle, and every change is classified before it ships."
+---
+
+In Drawbore an agent is never just a name. Before it runs under governance it is
+**registered** to a human sponsor and issued an identity — a purpose, a risk
+tier, and a lifecycle. And every change to an agent is **classified** — breaking
+or not — before it goes near production.
+
+## Identity and lifecycle
+
+```python
+from drawbore.identity import IdentityRegistry
+
+registry = IdentityRegistry()
+registry.register(
+    scorer.spec,
+    sponsor="alice@bank.example",   # always required — no agent without an owner
+    purpose="score remittance risk",
+    ttl_seconds=86_400,
+)
+```
+
+An agent moves through `draft → active → suspended → decommissioned`:
+
+- **draft** — defined but not registered; schema validation only (an ordinary
+  `@agent` you have not registered).
+- **active** — registered and runnable.
+- **suspended** — temporarily paused; `registry.resume(name)` brings it back.
+- **decommissioned** — one action retires it for good; it can never run again.
+
+Re-attestation: if you change an agent's tools, input schema, output schema, or
+risk tier, it must be re-attested by its sponsor before it can run again — and
+the re-attestation must match the exact change that triggered the block.
+
+```python
+registry.update(scorer_v2.spec)          # surface changed → blocked
+registry.reattest("scorer", sponsor="alice@bank.example", spec=scorer_v2.spec)
+```
+
+## Enforcing identity in a run
+
+Pass the registry to `run`. A registered agent that is suspended,
+decommissioned, or pending re-attestation halts and escalates before it
+executes; a draft agent runs as usual.
+
+```python
+result = await pipeline.run(order, identities=registry)
+if result.status in ("halted", "escalated"):
+    print(result.reason)   # e.g. "identity_reattestation_required"
+```
+
+## Versioning: classify before you ship
+
+```python
+from drawbore.versioning import classify_change
+
+kind = classify_change(OldIn, OldOut, NewIn, NewOut)  # "breaking" | "non_breaking"
+```
+
+- **non-breaking** — an added optional field, or a prompt/model swap.
+  Canary-eligible.
+- **breaking** — a removed field, a changed type, a change to a field's
+  required-ness (or any nested schema change). Must shadow first.
+
+A regulated rollout never big-bangs. The deployment walks its stages in order,
+and rollback to the last stable version is always one call away.
+
+```python
+from drawbore.versioning import Deployment, RolloutPlan
+
+dep = Deployment(stable_version="1.0.0")
+dep.begin(RolloutPlan(change_kind=kind, new_version="1.1.0"))
+# ... each stage's gate must pass before advancing; a failed gate ...
+dep.rollback()   # ... routes back to the last stable version, atomically
+```
+
+Live shadow/canary traffic and the one-click rollback dashboard are part of the
+managed service; the ordering, classification, and rollback logic are in the
+core.

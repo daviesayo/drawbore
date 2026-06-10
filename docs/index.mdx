@@ -1,0 +1,47 @@
+---
+title: "Drawbore"
+description: "A safety-first Python SDK for building constrained, composable agent pipelines for high-stakes, deterministic workflows."
+---
+
+Drawbore is a Python SDK for building **constrained, composable agent pipelines**
+with safety guarantees baked in as architecture — for high-stakes workflows in
+fintech, healthcare, legal, and compliance.
+
+The thesis: **capability is a liability in high-stakes workflows; constraint is
+the feature.** You write the business logic; Drawbore enforces the contracts —
+typed schemas at every boundary, narrow audited tool access, halt-and-escalate by
+default, and an append-only audit trail a non-engineer can read.
+
+## When to use Drawbore
+
+Reach for Drawbore when a wrong action is expensive: moving money, touching a
+patient record, triggering a legal obligation. If you need an agent to be
+*predictable and auditable* rather than maximally capable, this is the tool.
+
+## What you get
+
+- **Typed pipelines** — every step's input and output is a Pydantic model,
+  validated at the boundary. A wrong shape halts the run.
+- **Narrow tool access** — agents reach the outside world only through declared
+  tools, each call passing a proxy with a single-use capability token.
+- **Halt-and-escalate** — the default on any failure is to stop and hand a
+  legible escalation package to a human, never to guess.
+- **Observability and audit** — OpenTelemetry GenAI spans and an append-only
+  audit record, always on, in the MIT core.
+- **Local test mode** — run a whole pipeline with mocked models and tools while
+  every safety control runs for real.
+
+## Start here
+
+- [Quickstart](/docs/quickstart) — install Drawbore and run your first pipeline.
+- [Pipelines](/docs/guide/pipelines) — learn the core primitive.
+- [For coding agents](/docs/agents/index) — using Drawbore correctly from a
+  coding agent in your own repository.
+
+## Installation
+
+```bash
+pip install drawbore
+```
+
+Drawbore is MIT-licensed.

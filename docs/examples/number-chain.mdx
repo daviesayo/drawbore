@@ -1,0 +1,36 @@
+---
+title: "Example: live OpenAI number chain"
+description: "Chain three live OpenAI-backed agents together, each receiving the previous agent's typed output."
+---
+
+This example shows Drawbore's simplest live-model chaining behavior: if you add
+steps linearly and do not declare `From(...)` bindings, each non-first
+model-backed agent receives the previous agent's whole typed output. It uses the
+current `LLMRuntime` path with one OpenAI provider configured from
+`OPENAI_API_KEY`.
+
+Full source: `examples/number_chain/pipeline.py` (test in
+`examples/number_chain/test_number_chain.py`).
+
+```python
+pipeline = Pipeline(name="number_chain", version="1.0.0")
+pipeline.add(draw_number)
+pipeline.add(inspect_number)
+pipeline.add(explain_result)
+```
+
+The steps are:
+
+- `draw_number`: creates a random five-digit number.
+- `inspect_number`: checks `is_prime` and `divisible_by_5`.
+- `explain_result`: explains the combination. Since the only prime divisible by
+  5 is `5`, no five-digit number can satisfy both checks.
+
+## Run
+
+```bash
+PYTHONPATH=src OPENAI_API_KEY=sk-... python3.11 examples/number_chain/pipeline.py
+```
+
+The script makes three real OpenAI calls, then prints the final `status`, every
+step output, and the legible audit trace from `result.audit_trace.legible()`.

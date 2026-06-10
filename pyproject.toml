@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# Distribution name and import name are both "drawbore"
+# (name confirmed available on PyPI).
+name = "drawbore"
+version = "0.0.0"
+description = "Constrained, composable agents that hold by construction — a safety-first SDK for high-stakes, deterministic agent workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Davies Ayo" }]
+keywords = ["agents", "ai", "safety", "pipelines", "fintech", "compliance", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+# Dependencies are limited to the four approved runtime libraries:
+# Pydantic, ADK, LiteLLM, OpenTelemetry. No others without an explicit stop.
+dependencies = [
+    "pydantic>=2",
+    "google-adk",
+    "litellm",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+]
+
+# Optional extras keep the core dependency set minimal.
+# OTLP export requires an exporter package beyond the api/sdk base packages;
+# it ships opt-in via `pip install drawbore[otlp]`, not in core.
+[project.optional-dependencies]
+otlp = [
+    "opentelemetry-exporter-otlp",
+]
+# The MCP SDK ships opt-in via the `mcp` extra
+# (`pip install drawbore[mcp]`), pulled through ADK's own extra so the core
+# dependency set stays minimal.
+mcp = [
+    "google-adk[mcp]",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "examples"]
+addopts = "--import-mode=importlib"
+
+[project.urls]
+Repository = "https://github.com/daviesayo/drawbore"
+Documentation = "https://github.com/daviesayo/drawbore/tree/main/docs"
+Changelog = "https://github.com/daviesayo/drawbore/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/drawbore"]

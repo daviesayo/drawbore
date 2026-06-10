@@ -1,0 +1,73 @@
+---
+title: "Evidence compression: give the model less, keep everything"
+description: "Compress large evidence to a bounded, policy-approved view for a model-backed agent — the original is always retained and retrievable through the proxy, and every decision is audited."
+---
+
+High-stakes workflows carry large evidence: thousands of transactions, long logs,
+hundreds of contract clauses. Drawbore lets a model-backed agent see a bounded,
+policy-approved view of that evidence while keeping the original intact and every
+compression and retrieval decision in the audit trail. Constraint, not blindness.
+
+Compression is **opt-in** and **deterministic**: a step with no policy behaves
+exactly as before, and the same input under the same policy always produces the
+same bounded view.
+
+## Turn it on for a step
+
+```python
+from drawbore import Pipeline
+from drawbore.evidence import EvidencePolicy, InMemoryEvidenceStore
+
+p = Pipeline(name="aml")
+p.add(
+    screen,                                   # a model-backed agent (@agent(model=...))
+    evidence=EvidencePolicy(name="aml", enabled=True, min_tokens=800),
+)
+
+store = InMemoryEvidenceStore()
+result = await p.run(transactions, engine=engine, evidence_store=store)
+```
+
+When the step's input is large enough, the framework compresses the evidence the
+model sees (e.g. 2,000 transaction records → the high-signal rows plus a
+representative sample), stores the full original, and records the decision:
+
+```python
+print(result.audit_trace.step_records[0].evidence)
+# evidence compressed (compressed for model); via json_rows; 4200->950 tokens; handle 8f3c...
+```
+
+`enabled=False` (the default) is byte-identical passthrough. `mode="simulate"`
+records what *would* be compressed without changing the payload — useful for
+rolling the feature out safely.
+
+## Retrieve the original, safely
+
+The original is never lost. An agent that declares the evidence tool can retrieve
+it through the proxy — scoped by a one-time token, gated by policy:
+
+```python
+from drawbore.evidence import register_evidence_tool, EVIDENCE_TOOL_REF
+
+register_evidence_tool(registry, store=store)
+
+@agent(input=Transactions, output=Verdict, model="m", tools=[EVIDENCE_TOOL_REF])
+async def screen(event, tools):
+    hits = await tools.call(EVIDENCE_TOOL_REF, {"handle_id": h, "mode": "search", "query": "high_risk"})
+```
+
+A handle appearing in context is **not** permission to retrieve — the proxy is
+authoritative. By default a policy allows scoped *search* of the original and
+denies wholesale *full* retrieval; both are policy-gated and audited, search is
+bounded so it cannot reconstruct the whole original, and an unknown or expired
+handle fails closed.
+
+If compression is declared but the original cannot be stored, the run **halts**
+with a legible `evidence_error` rather than ever sending compressed-only evidence
+to the model.
+
+You bring the policy and (for now) call retrieval from agent code; the model
+driving its own retrieval mid-completion arrives with the agentic tool loop.
+Durable evidence stores and ML/prose compression are part of the managed service —
+the open-source core gives you deterministic transforms, original retention, and
+the audited, proxy-scoped retrieval path.

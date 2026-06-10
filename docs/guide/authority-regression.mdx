@@ -1,0 +1,64 @@
+---
+title: "Authority regression checks"
+description: "Fail CI when a pipeline edit grants an agent new tool or evidence authority."
+---
+
+**When to use this:** you want a CI gate that blocks a pipeline change if it lets an
+agent reach a tool or evidence scope it could not reach before — the agent equivalent of
+"prove this policy change grants no new access."
+
+Drawbore can compute this because a pipeline's authority is *declared*: the serialized
+manifest plus the single-use capability tokens the proxy mints. From a manifest it derives
+a **capability footprint** — the set of `(agent, tool/evidence, ref, scope)` facts the
+pipeline may exercise — and diffs two footprints.
+
+```python
+from drawbore.config import PipelineConfig, check_no_new_authority
+from drawbore.config.errors import AuthorityRegressionError
+
+old = PipelineConfig.model_validate(base_manifest)
+new = PipelineConfig.model_validate(head_manifest)
+try:
+    check_no_new_authority(old, new)        # raises if the new manifest grants more
+except AuthorityRegressionError as exc:
+    print(exc)                              # a regulator-legible certificate
+    raise
+```
+
+**What counts as new authority (v1):** an added tool on any agent, or any evidence-retrieval
+grant newly given to an agent (a new `search` or `full` scope, or an existing policy newly
+enabled). The check is *sound but coarse* — it ignores branch
+conditions (worst-case reachable) and tool operations, so it never misses an expansion but
+cannot credit a narrowing achieved purely by tightening a branch.
+
+If you want the raw diff rather than a raised exception, call `authority_diff` directly:
+
+```python
+from drawbore.config import authority_diff
+
+diff = authority_diff(old, new)
+if not diff.ok:
+    print(diff.certificate())   # same human-readable + JSON payload the error carries
+```
+
+The certificate includes the footprint fingerprints of both manifests — paste them into a
+PR comment as a reproducible provenance anchor.
+
+To verify that a running pipeline stayed within its declared footprint, use the
+`test_mode` soundness helper:
+
+```python
+from drawbore.testing import assert_footprint_sound
+
+async with pipeline.test_mode(...) as tp:
+    result = await tp.run(payload)
+
+assert_footprint_sound(config, result.audit_trace)
+```
+
+`assert_footprint_sound` reads `RunResult.audit_trace` — the same audit record available
+in production — and raises `AssertionError` if any tool or evidence ref the run exercised
+is absent from the manifest's static footprint. Run it in your acceptance tests to catch
+the day a future change binds a ref the manifest cannot see.
+
+See the full runnable CI-gate example at `examples/authority_regression_ci.py`.

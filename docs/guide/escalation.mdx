@@ -1,0 +1,73 @@
+---
+title: "Escalation: putting a human in the loop"
+description: "Hand a complete, readable package to a person when a run can't proceed safely."
+---
+
+A Drawbore run never guesses past a problem. When something blocks it — a failed
+check, a low-confidence result, or a step marked as needing sign-off — it builds
+an **escalation package** and hands it to a human.
+
+## Attach a policy
+
+```python
+from drawbore import Pipeline
+from drawbore.escalation import EscalationPolicy
+
+pipeline = Pipeline(
+    name="payments",
+    on_failure=EscalationPolicy(channel="slack", target="compliance_queue", mode="sync"),
+)
+```
+
+- **sync** — the run **stops and waits** for a person (use for irreversible actions).
+- **async** — the run **flags and continues** (use for reviewable results, like audit).
+
+`async` applies to the low-confidence trigger only. A failure or a step that
+requires sign-off **always stops the run**, whatever the mode — there is no valid
+result to carry forward.
+
+## The package a human receives
+
+Every escalation says which step stopped, what it received, what it tried to
+produce, why it stopped, the steps completed before it, and when — readable
+without an engineer.
+
+```python
+result = await pipeline.run(order)
+if result.status == "escalated":
+    print(result.escalations[-1].legible())
+```
+
+## Triggers
+
+- **A failure** (schema, blocked tool, runaway loop, agent error) — always stops.
+- **Low confidence** — mark an output model with `HasConfidence` and set a
+  `confidence_threshold` on the pipeline; results below it escalate. Only marked
+  models are checked — the framework never invents a confidence value.
+- **Sign-off required** — declare `@agent(..., requires_human_approval=True)`; the
+  step always stops for human approval.
+
+```python
+from pydantic import BaseModel
+from drawbore import Pipeline, agent
+from drawbore.escalation import EscalationPolicy, HasConfidence
+
+class RiskScore(BaseModel, HasConfidence):
+    score: int
+    confidence: float          # 0..1 — the framework never invents this
+
+@agent(input=Order, output=RiskScore, requires_human_approval=True)
+async def assess(order: Order) -> RiskScore:
+    ...
+
+# the threshold lives on the pipeline; a RiskScore below it escalates
+pipeline = Pipeline(
+    name="payments",
+    on_failure=EscalationPolicy(channel="slack", target="compliance_queue"),
+    confidence_threshold=0.80,
+)
+```
+
+With no `on_failure` policy a failure still just halts (`status="halted"`). Real
+delivery channels (Slack/email/webhook) and the approve/reject interface are part
+of the managed service.

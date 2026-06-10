@@ -1,0 +1,42 @@
+---
+title: "Example: remittance validation"
+description: "A high-stakes remittance pipeline — tool lookup, a confidence-gated model step, and a typed confirmation, run in test mode."
+---
+
+This example shows Drawbore on a high-stakes task: confirming a cross-border
+remittance. It fetches a transaction through a narrow tool, scores its risk with a
+confidence-gated model agent, and writes a typed confirmation — halting to a human
+when the model's confidence is low.
+
+Full tested source: `examples/remittance_validation/pipeline.py` (tests in
+`examples/remittance_validation/test_remittance_validation.py`).
+
+## What it demonstrates
+
+- A **tool-backed step** (`retrieve_transaction`) that reaches a database only
+  through a declared tool.
+- A **confidence-gated model step** (`score_risk`, a `HasConfidence` output): a
+  low-confidence score escalates instead of guessing.
+- **`From(...)` fan-in** into the final `write_confirmation` step.
+- Running it all in `pipeline.test_mode(...)` with mocked tool and model responses.
+
+```python
+pipeline.add(
+    score_risk,
+    inputs={
+        "amount": From("retrieve_transaction.amount"),
+        "currency": From("retrieve_transaction.currency"),
+        "corridor": From("retrieve_transaction.corridor"),
+    },
+    depends_on=["retrieve_transaction"],
+)
+```
+
+## Run
+
+```bash
+pytest examples/remittance_validation/test_remittance_validation.py
+```
+
+See the [Model-backed agents](/docs/guide/model-backed-agents),
+[Tools](/docs/guide/tools), and [Escalation](/docs/guide/escalation) guides.

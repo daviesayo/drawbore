@@ -1,0 +1,35 @@
+---
+title: Safety gauntlet
+description: Regression-test that your pipeline's safety layer still refuses the canonical agent attacks.
+---
+
+# Safety gauntlet
+
+**When to use this:** you want CI to fail if a change to your pipeline silently weakens a
+safety guarantee — a relaxed schema, a removed escalation trigger, a tool the model can now
+over-call. The gauntlet drives canonical attacks through Drawbore's real safety layer (via
+`test_mode`) and asserts the runtime **refused**.
+
+```python
+from drawbore.testing import schema_violation, assert_contained
+
+case = schema_violation("risk_scorer", {"missing": "required fields"})
+await assert_contained(pipeline, case, initial=my_input)   # raises if NOT refused
+```
+
+Each case returns a `Containment` verdict; `run_containment(...)` returns `None` when the
+attack was **not** contained (the run completed) — a failure. Builders: `schema_violation`,
+`low_confidence`, `unmocked_tool`, `breaker_trip`, `parallel_tool_calls`, `non_json_final`.
+
+`low_confidence` requires the pipeline to set a `confidence_threshold` and a **sync**
+`on_failure` policy. The loop-driven cases (`unmocked_tool`, `breaker_trip`,
+`parallel_tool_calls`, `non_json_final`) target a model+tools agent declaring the tool(s). In
+a multi-step pipeline, pass `baseline=` benign mocks for the non-target steps so the target is
+reached.
+
+**Honest scope:** a green gauntlet proves refusal only on the attack paths it exercises. It is
+*not* a proof that bypass is impossible — that is an architectural property of Drawbore's
+single tool chokepoint, not something this corpus establishes. `denied:token` / `denied:scope`
+denials are enforced by that chokepoint but are not driven by the pack.
+
+See the full runnable example at `examples/safety_gauntlet.py`.
