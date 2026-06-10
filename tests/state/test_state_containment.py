@@ -19,10 +19,11 @@ _LITELLM = re.compile(r"^\s*(?:import\s+litellm\b|from\s+litellm\b)", re.MULTILI
 _MCP_SDK = re.compile(r"^\s*(?:import\s+mcp\b|from\s+mcp\b)", re.MULTILINE)
 _OTEL = re.compile(r"^\s*(?:import\s+opentelemetry\b|from\s+opentelemetry\b)", re.MULTILINE)
 
-# Higher Drawbore subsystems that state must not depend on.
+# Higher Drawbore subsystems that state must not depend on. Both import forms
+# are matched — `from drawbore.X import ...` and bare `import drawbore.X`.
 _FORBIDDEN_DRAWBORE = re.compile(
-    r"^\s*from\s+drawbore\."
-    r"(pipeline|orchestration|llm|testing|mcp|audit|observability|"
+    r"^\s*(?:from|import)\s+drawbore\."
+    r"(?:pipeline|orchestration|llm|testing|mcp|audit|observability|"
     r"evidence|escalation|identity|versioning|config|agent)\b",
     re.MULTILINE,
 )
@@ -77,7 +78,7 @@ def test_state_does_not_import_higher_drawbore_subsystems() -> None:
 # allowed — they never appear as bare `from drawbore.X import` at module level
 # outside the TYPE_CHECKING block, so a source scan is the right mechanism).
 _STEP_SEAL_FORBIDDEN = re.compile(
-    r"^\s*from\s+drawbore\.(config|agent|evidence|pipeline|orchestration|"
+    r"^\s*(?:from|import)\s+drawbore\.(?:config|agent|evidence|pipeline|orchestration|"
     r"llm|testing|mcp|audit|observability|escalation|identity|versioning)\b",
     re.MULTILINE,
 )
