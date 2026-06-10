@@ -22,7 +22,8 @@ from drawbore.observability import payload_hash
 from drawbore.errors import SanitizationError
 from drawbore.schema import check_compatibility
 from drawbore.schema.errors import SchemaCompatibilityError
-from drawbore.state import CheckpointStore, RunState
+from drawbore.state import CheckpointStore, ResumeLedger, ResumeLedgerBuilder, RunState
+from drawbore.state.step_seal import diff_seals, field_label, seal_for
 from drawbore.orchestration import LocalEngine, OrchestratorEngine
 from drawbore.tools import (
     ToolAccessError,
@@ -67,6 +68,7 @@ class RunResult:
     audit_trace: "AuditRecord | None" = None
     run_id: str | None = None
     halt_code: str | None = None
+    resume_ledger: "ResumeLedger | None" = None
 
 
 class Pipeline:
@@ -396,12 +398,14 @@ class Pipeline:
             run_id=resolved_run_id, pipeline=self.name,
             version=self.version, tenant_id=tenant_id,
         )
+        ledger_builder = ResumeLedgerBuilder(run_id=resolved_run_id)
         result: RunResult | None = None
         try:
             result = await self._run_inner(
                 initial, engine,
                 run_id=resolved_run_id, checkpoints=checkpoints,
                 identities=identities, tenant_id=tenant_id, recorder=recorder,
+                ledger_builder=ledger_builder,
                 evidence_store=evidence_store,
                 registry_override=registry_override,
                 initial_trust=initial_trust,
@@ -422,6 +426,7 @@ class Pipeline:
                     audit.write(record)
                 result.audit_trace = record
                 result.run_id = resolved_run_id
+                result.resume_ledger = ledger_builder.build()
 
     async def _run_inner(
         self,
@@ -433,6 +438,7 @@ class Pipeline:
         identities: IdentityRegistry | None = None,
         tenant_id: str | None = None,
         recorder: AuditRecorder,
+        ledger_builder: ResumeLedgerBuilder,
         evidence_store: EvidenceStore | None = None,
         registry_override: Any | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
@@ -459,13 +465,77 @@ class Pipeline:
         proxy = ToolProxy(registry, issuer, ledger=ledger)
         state = RunState(run_id=run_id)
         if checkpoints is not None:
+            from .graph import JoinNode as _JoinNode
+
+            has_progress = any(
+                checkpoints.is_completed(run_id, i) or checkpoints.is_skipped(run_id, i)
+                for i in range(len(self.steps))
+            )
+            if has_progress:
+                ledger_builder.set_resumed()
             fp = self._topology_fingerprint()
             if not checkpoints.fingerprint_matches(run_id, fp):
-                # Topology changed under this run_id: index-keyed resume would mis-map.
-                # Fail closed by ignoring stale checkpoints (fresh run), never resume shifted.
-                checkpoints = None
+                if has_progress:
+                    # Topology changed under a run with prior progress:
+                    # index-keyed resume would mis-map and re-execution would
+                    # double-fire completed steps. Refuse.
+                    ledger_builder.set_topology("drifted")
+                    return self._halt(
+                        {}, 0, [],
+                        step=self.name,
+                        reason=(
+                            "resume_drift: pipeline topology changed since "
+                            f"run '{run_id}' was checkpointed; refusing to resume"
+                        ),
+                        received=None, attempted_output=None,
+                        code="resume_drift",
+                    )
+                # A stale fingerprint with zero progress protects nothing:
+                # treat as a fresh run and re-record.
+                checkpoints.record_fingerprint(run_id, fp)
+                ledger_builder.set_topology("recorded")
             else:
                 checkpoints.record_fingerprint(run_id, fp)
+                ledger_builder.set_topology("verified" if has_progress else "recorded")
+
+            if has_progress:
+                # Pre-flight seal verification: every checkpoint-completed
+                # agent step must match its stored seal BEFORE anything runs.
+                refusals: list[tuple[int, str, tuple[str, ...]]] = []
+                for i, node_ in enumerate(self.steps):
+                    if isinstance(node_, _JoinNode):
+                        continue  # joins are covered by the topology fingerprint
+                    if not checkpoints.is_completed(run_id, i):
+                        continue
+                    current = seal_for(node_.agent.spec, node_.evidence)
+                    stored = checkpoints.seal_of(run_id, i)
+                    if stored is None:
+                        ledger_builder.refused(i, node_.agent.name, drifted_fields=())
+                        refusals.append((i, node_.agent.name, ()))
+                        continue
+                    drifted = diff_seals(stored, current)
+                    if drifted:
+                        ledger_builder.refused(i, node_.agent.name, drifted_fields=drifted)
+                        refusals.append((i, node_.agent.name, drifted))
+                    else:
+                        ledger_builder.restored(i, node_.agent.name, verified=True)
+                if refusals:
+                    idx0, name0, fields0 = refusals[0]
+                    if fields0:
+                        labels = ", ".join(field_label(f) for f in fields0)
+                        detail = f"changed since checkpoint ({labels})"
+                    else:
+                        detail = (
+                            "has a checkpointed output but no stored seal; "
+                            "its semantics cannot be verified"
+                        )
+                    return self._halt(
+                        {}, 0, [],
+                        step=name0,
+                        reason=f"resume_drift: step '{name0}' {detail}; refusing to resume",
+                        received=None, attempted_output=None,
+                        code="resume_drift",
+                    )
         outputs: dict[str, BaseModel] = {}
         # Two taint surfaces: `ledger` holds the WITHIN-step mutable scope the
         # proxy gates/bumps during execution; `output_trust` is the CROSS-STEP
@@ -504,6 +574,7 @@ class Pipeline:
                 if checkpoints is not None and checkpoints.is_completed(run_id, idx):
                     outputs[name] = checkpoints.output_of(run_id, idx)
                     output_trust[name] = checkpoints.trust_of(run_id, idx)
+                    ledger_builder.restored_join(idx, name)
                     steps_run += 1
                     continue
                 # joins are exempt from skip-propagation: always dispatch.
@@ -529,6 +600,7 @@ class Pipeline:
                     join=f"{node.policy} over {node.sources} -> {selected}",
                 )
                 steps_run += 1
+                ledger_builder.executed_join(idx, name)
                 if checkpoints is not None:
                     checkpoints.step_succeeded(run_id, idx, value)
                     checkpoints.record_trust(run_id, idx, output_trust[name])
@@ -552,6 +624,7 @@ class Pipeline:
                     index=idx, agent=name, version=step.agent.spec.version,
                     agent_id=agent_id, condition="(resumed: skipped)",
                 )
+                ledger_builder.skipped(idx, name)
                 continue
 
             cascade = reach_sources & skipped
@@ -566,6 +639,7 @@ class Pipeline:
                     # several skipped sources — deterministic and legible for auditors.
                     condition=f"cascade: {sorted(cascade)[0]} skipped",
                 )
+                ledger_builder.skipped(idx, name)
                 continue
             if step.when is not None:
                 if step.when.agent in skipped:
@@ -605,6 +679,7 @@ class Pipeline:
                         agent_id=agent_id,
                         condition=f"{step.when.legible()} (false)",
                     )
+                    ledger_builder.skipped(idx, name)
                     continue
 
             # Identity gate: a registered agent that is suspended, decommissioned,
@@ -730,6 +805,10 @@ class Pipeline:
             if checkpoints is not None:
                 checkpoints.step_succeeded(run_id, idx, validated_out)
                 checkpoints.record_trust(run_id, idx, output_trust[name])
+                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                ledger_builder.executed(idx, name, sealed=True)
+            else:
+                ledger_builder.executed(idx, name, sealed=False)
             steps_run += 1
 
         return RunResult("completed", outputs, steps_run, escalations=escalations)
