@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel
 
 from drawbore.tools.taint import TrustLabel
+from drawbore.state.step_seal import StepSeal
 
 
 class CheckpointStore(ABC):
@@ -45,11 +46,39 @@ class CheckpointStore(ABC):
 
     @abstractmethod
     def record_fingerprint(self, run_id: str, fingerprint: str) -> None:
-        """Persist the run's topology fingerprint on first use."""
+        """Persist the run's topology fingerprint, overwriting any stale value.
+
+        The pipeline only calls this when the fingerprint is valid to (re)record:
+        on first use, on a verified match, and when resetting after a topology
+        change with zero prior progress.
+        """
 
     @abstractmethod
     def fingerprint_matches(self, run_id: str, fingerprint: str) -> bool:
         """True if no fingerprint is stored yet, or the stored one matches."""
+
+    def record_seal(self, run_id: str, step: int, seal: StepSeal) -> None:
+        """Persist ``step``'s semantic seal. Default no-op: an un-upgraded store
+        simply doesn't persist seals (and ``seal_of`` then fails closed).
+
+        Durable stores MUST override both ``record_seal`` and ``seal_of``
+        together, and MUST persist a step's output, trust, and seal atomically
+        (one transaction): a crash between ``step_succeeded`` and
+        ``record_seal`` leaves a completed-without-seal step that refuses the
+        next resume as unverifiable.
+        """
+        return None
+
+    def seal_of(self, run_id: str, step: int) -> StepSeal | None:
+        """Return the persisted seal of a completed ``step``, or ``None``.
+
+        ``None`` for a completed step fails closed: the resume refuses
+        (unverifiable is not verified). A store that doesn't persist seals
+        therefore hard-refuses resumes of completed work — safe, never
+        replay-unverified. Durable stores MUST override both ``record_seal``
+        and ``seal_of`` together.
+        """
+        return None
 
     def record_trust(self, run_id: str, step: int, trust: TrustLabel) -> None:
         """Persist ``step``'s output trust label. Default no-op: an un-upgraded store
@@ -78,6 +107,7 @@ class InMemoryCheckpointStore(CheckpointStore):
         self._skipped: set[tuple[str, int]] = set()
         self._fingerprints: dict[str, str] = {}
         self._trust: dict[tuple[str, int], TrustLabel] = {}
+        self._seals: dict[tuple[str, int], StepSeal] = {}
 
     def step_started(self, run_id: str, step: int) -> None:
         # No-op for the in-memory store: a process crash wipes it, so there is
@@ -105,11 +135,17 @@ class InMemoryCheckpointStore(CheckpointStore):
         return (run_id, step) in self._skipped
 
     def record_fingerprint(self, run_id: str, fingerprint: str) -> None:
-        self._fingerprints.setdefault(run_id, fingerprint)
+        self._fingerprints[run_id] = fingerprint
 
     def fingerprint_matches(self, run_id: str, fingerprint: str) -> bool:
         stored = self._fingerprints.get(run_id)
         return stored is None or stored == fingerprint
+
+    def record_seal(self, run_id: str, step: int, seal: StepSeal) -> None:
+        self._seals[(run_id, step)] = seal
+
+    def seal_of(self, run_id: str, step: int) -> StepSeal | None:
+        return self._seals.get((run_id, step))
 
     def record_trust(self, run_id: str, step: int, trust: TrustLabel) -> None:
         self._trust[(run_id, step)] = trust
