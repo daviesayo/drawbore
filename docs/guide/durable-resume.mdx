@@ -78,10 +78,11 @@ Two more boundaries to know:
   refuses drifted resumes; it does not make execution single-use.
 - **Custom checkpoint stores must persist seals.** A store that implements the
   older interface restores outputs but returns no seals, and an unverifiable
-  step refuses the resume. Implement `record_seal`/`seal_of` together, and
-  persist a step's output, trust, and seal atomically. Checkpoints written
-  before seals existed refuse the same way: re-run those flows fresh under a
-  new `run_id`.
+  step refuses the resume with `resume_drift` until the store implements
+  `record_seal`/`seal_of`. Implement both together, and persist a step's
+  output, trust, and seal atomically. Checkpoints written before seals existed
+  also refuse with `resume_drift`: re-run those flows fresh under a new
+  `run_id`.
 
 ## Common mistakes
 
