@@ -1,0 +1,95 @@
+---
+title: "Durable resume"
+description: "Resume a checkpointed run safely — and refuse the resume when the pipeline changed underneath it."
+---
+
+Use durable resume when a pipeline run can halt partway (a model outage, an
+escalation, a crash) and you want to continue it later without re-executing
+the steps that already succeeded. Drawbore's resume is refuse-on-drift: before
+restoring anything, the runtime verifies that the pipeline still means what it
+meant when the checkpoint was taken. If an agent's declared contract or the
+pipeline's topology changed, the resume halts with `halt_code ==
+"resume_drift"` instead of replaying outputs into changed logic — and it halts
+before executing a single step.
+
+## Resuming a run
+
+Pass a checkpoint store and a stable `run_id`:
+
+```python
+from drawbore.state import InMemoryCheckpointStore
+
+store = InMemoryCheckpointStore()
+first = await pipeline.run(order, run_id="order-A-1", checkpoints=store)   # halts at step 3
+again = await pipeline.run(order, run_id="order-A-1", checkpoints=store)  # resumes at step 3
+```
+
+Completed steps are restored from the store, not re-executed. Each completed
+step also records a **seal** — a snapshot of the agent's declared contract
+(version, risk tier, tools, model, fallback model, instructions, input/output
+schemas, approval requirement, and the step's evidence policy).
+
+## When resume says no
+
+On resume, every stored seal is re-verified against the live pipeline before
+anything runs. A mismatch refuses the whole resume:
+
+```python
+# Between attempts, someone changed the writer's model...
+result = await pipeline.run(order, run_id="order-A-1", checkpoints=store)
+assert result.status == "halted"
+assert result.halt_code == "resume_drift"
+print(result.reason)
+# resume_drift: step 'confirmation_writer' changed since checkpoint (model); refusing to resume
+```
+
+Refusal is pre-flight: zero steps execute, so a refused resume has zero side
+effects and never double-fires a completed step. Topology changes (steps
+added, removed, or rewired) refuse the same way when the run had prior
+progress; a `run_id` that never completed any step simply starts fresh.
+
+## The resume ledger
+
+Every run result carries `resume_ledger` — a regulator-readable record of what
+the runtime observed:
+
+```python
+print(result.resume_ledger.legible())
+# Run 'order-A-1': resumed from checkpointed state.
+# Step 2 'confirmation_writer': resume refused — changed since checkpoint (model).
+# 2 completed step(s) verified clean; resume was refused before any restore.
+```
+
+Each entry names the step, its disposition (`executed`, `restored`, `skipped`,
+or `refused`), and the seal verdict. Branch on `halt_code`, never on the prose
+(see [Reliability](/guide/reliability)).
+
+## What the seal does and does not cover
+
+The seal covers **declared** semantics. It does not fingerprint Python
+function bodies: changing an agent's implementation without bumping `version`
+is invisible to the seal. Bump `version` on any behavior change — that is the
+author's half of the contract.
+
+Two more boundaries to know:
+
+- **Concurrent resumes are not serialized.** Two workers resuming the same
+  `run_id` at the same time both pass verification and both execute. The seal
+  refuses drifted resumes; it does not make execution single-use.
+- **Custom checkpoint stores must persist seals.** A store that implements the
+  older interface restores outputs but returns no seals, and an unverifiable
+  step refuses the resume. Implement `record_seal`/`seal_of` together, and
+  persist a step's output, trust, and seal atomically. Checkpoints written
+  before seals existed refuse the same way: re-run those flows fresh under a
+  new `run_id`.
+
+## Common mistakes
+
+- **Reusing a `run_id` for a different request.** Resume is keyed by `run_id`;
+  a reused id restores the previous run's outputs. Use one id per logical run.
+- **Upgrading Pydantic mid-run.** Schema fingerprints can change across
+  Pydantic minor versions, which reads as drift and refuses the resume. Safe,
+  but plan upgrades between runs, not across them.
+- **Treating `resume_drift` as retryable.** It is not transient. Either
+  restore the pipeline to the checkpointed semantics, or start a fresh
+  `run_id` under the new ones.
