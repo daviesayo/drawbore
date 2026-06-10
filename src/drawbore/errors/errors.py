@@ -19,6 +19,17 @@ class SanitizationError(DrawboreError):
     """External input exceeded a structural bound (size or depth)."""
 
 
+class ResumeDriftError(DrawboreError):
+    """A checkpointed run was resumed under drifted pipeline semantics.
+
+    The pipeline refuses such a resume before any step executes; this error
+    type exists for taxonomy completeness and for callers that want to raise
+    the condition themselves.
+    """
+
+    halt_reason = "resume_drift"
+
+
 # Most-specific first. A subclass MUST appear before any base class it inherits
 # from, otherwise the base entry would shadow it in halt_reason_for. The ordering
 # invariant is enforced at import time by the guard below.
@@ -94,4 +105,5 @@ HALT_CODES: tuple[str, ...] = (
     "confidence_marker_without_value",
     "confidence_below_threshold",
     "requires_human_approval",
+    "resume_drift",
 )

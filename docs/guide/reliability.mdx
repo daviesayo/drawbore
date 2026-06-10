@@ -44,3 +44,8 @@ again = await pipeline.run(order, run_id="order-A-1", checkpoints=store)   # res
 vocabulary the audit trail uses (`schema_violation`, `tool_access`,
 `circuit_breaker`, `condition_tainted`, ...). Branch on `halt_code`, never on the
 prose in `reason`; the prose is for humans and may be reworded.
+
+A `resume_drift` halt means a checkpointed run was resumed after the
+pipeline's topology or an agent's declared contract changed; see
+[Durable resume](/guide/durable-resume) for the refusal semantics and the
+resume ledger.
