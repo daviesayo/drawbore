@@ -1,8 +1,6 @@
 """Seal persistence on the checkpoint store, and the fail-closed default
 for stores that do not persist seals."""
 
-from pydantic import BaseModel
-
 from drawbore.state import CheckpointStore, InMemoryCheckpointStore
 from drawbore.state.step_seal import StepSeal
 
@@ -24,10 +22,6 @@ def _seal(**overrides) -> StepSeal:
     )
     base.update(overrides)
     return StepSeal(**base)
-
-
-class _Out(BaseModel):
-    x: int
 
 
 class _MinimalStore(CheckpointStore):
