@@ -1,5 +1,7 @@
 """Unit tests for the per-step resume seal."""
 
+import pydantic
+import pytest
 from pydantic import BaseModel
 
 from drawbore.agent.spec import AgentSpec
@@ -52,13 +54,8 @@ def test_seal_is_deterministic():
 
 def test_seal_is_frozen_and_closed():
     seal = seal_for(_spec(), None)
-    import pydantic
-    try:
+    with pytest.raises(pydantic.ValidationError):
         seal.model = "other"
-        raised = False
-    except pydantic.ValidationError:
-        raised = True
-    assert raised
 
 
 def test_diff_empty_for_identical():
@@ -82,6 +79,8 @@ def test_every_sealed_field_drifts_individually():
         "fallback_model": _spec(fallback_model="openai/gpt-4o"),
         "instructions_fingerprint": _spec(instructions="Different."),
         "output_schema_fingerprint": _spec(output=_OutV2),
+        "agent": _spec(name="other_agent"),
+        "context_access": _spec(context_access="full"),
     }
     for field, mutated_spec in cases.items():
         drifted = diff_seals(base, seal_for(mutated_spec, None))
