@@ -116,10 +116,10 @@ async def test_clean_resume_verifies_and_completes():
     )
     # fetcher restored (1 call total), scorer re-ran, writer ran.
     assert CALLS["fetcher"] == 1
-    assert second.status == "halted" or second.status == "completed"
-    # NOTE for implementer: the restored fetcher output is "BOOM", so scorer
-    # halts again deterministically. The assertion that matters here is the
-    # restore + verification behavior:
+    # The restored fetcher output is "BOOM", so scorer halts again
+    # deterministically. This pins the restore + verification behavior, not
+    # a successful completion.
+    assert second.status == "halted"
     ledger = second.resume_ledger
     assert ledger is not None
     assert ledger.resumed is True

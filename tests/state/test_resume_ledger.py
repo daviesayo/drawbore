@@ -96,6 +96,8 @@ def test_legible_refusal_names_step_and_friendly_field():
     assert "confirmation_writer" in text
     assert "model" in text
     assert "refused" in text.lower()
+    # When refusals exist, the prose must not claim steps were restored.
+    assert "restored without re-execution" not in text
 
 
 def test_legible_friendly_label_for_fingerprint_field():

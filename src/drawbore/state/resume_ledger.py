@@ -75,10 +75,16 @@ class ResumeLedger(BaseModel):
             if e.disposition == "restored" and e.seal == "verified"
         )
         if verified:
-            lines.append(
-                f"{verified} completed step(s) verified against their seals "
-                "and restored without re-execution."
-            )
+            if refused:
+                lines.append(
+                    f"{verified} completed step(s) verified clean; "
+                    "resume was refused before any restore."
+                )
+            else:
+                lines.append(
+                    f"{verified} completed step(s) verified against their seals "
+                    "and restored without re-execution."
+                )
         executed = sum(1 for e in self.entries if e.disposition == "executed")
         if executed:
             lines.append(f"{executed} step(s) executed in this attempt.")

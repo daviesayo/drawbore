@@ -499,7 +499,13 @@ class Pipeline:
                 checkpoints.record_fingerprint(run_id, fp)
                 ledger_builder.set_topology("recorded")
             else:
-                checkpoints.record_fingerprint(run_id, fp)
+                # Skip the write when the fingerprint already matched and there
+                # is prior progress: the stored value is identical, so writing
+                # again is a no-op that durable stores still pay for per resume.
+                # On fresh runs (not has_progress) the write records the initial
+                # fingerprint, so it is always needed there.
+                if not has_progress:
+                    checkpoints.record_fingerprint(run_id, fp)
                 ledger_builder.set_topology("verified" if has_progress else "recorded")
 
             if has_progress:
@@ -587,6 +593,9 @@ class Pipeline:
                     outputs[name] = checkpoints.output_of(run_id, idx)
                     output_trust[name] = checkpoints.trust_of(run_id, idx)
                     if idx not in preflight_joins:
+                        # Defensive fallback: pre-flight logs every completed join,
+                        # so this branch cannot fire under the current pre-flight
+                        # contract; it guards against future callers that skip it.
                         ledger_builder.restored_join(idx, name)
                     steps_run += 1
                     continue
