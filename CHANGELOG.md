@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-10
+
 ### Changed
 
 - Development dependencies moved out of the public `dev` extra into PEP 735 dependency-groups.
