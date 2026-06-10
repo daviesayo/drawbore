@@ -13,3 +13,7 @@ CLAUDE.local.md
 .private-journal/
 .repowise/
 .claude/settings.local.json
+
+# Local artifacts
+__pycache__/
+.vscode/
