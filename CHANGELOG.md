@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Refuse-on-drift resume: resuming a checkpointed run now verifies a per-step
+  seal of each completed step's declared contract (version, risk tier, tools,
+  model, instructions, schemas, evidence policy) before anything executes, and
+  halts with the new `resume_drift` halt code naming the changed field instead
+  of replaying outputs into changed logic.
+- `RunResult.resume_ledger`: a regulator-readable record of every step's
+  resume disposition (`executed` / `restored` / `skipped` / `refused`) with a
+  `legible()` rendering, present on every run.
+- `CheckpointStore.record_seal` / `seal_of` with safe defaults; custom durable
+  stores should implement both and persist output, trust, and seal atomically.
+- New guide: durable resume (`docs/guide/durable-resume.mdx`).
+
+### Changed
+- Resuming under a changed pipeline topology now halts with `resume_drift`
+  when the run had prior progress. Previously the stale checkpoints were
+  silently discarded and the pipeline re-ran from the beginning under the same
+  `run_id`; that silent restart could re-execute already-completed steps.
+- Resumes from checkpoint stores that do not persist seals (including
+  checkpoints written by earlier versions) now refuse with `resume_drift`:
+  an unverifiable step is never restored. Re-run such flows under a fresh
+  `run_id`, or upgrade the store.
+
 ## [0.1.0] - 2026-06-10
 
 ### Changed

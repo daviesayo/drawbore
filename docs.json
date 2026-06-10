@@ -30,6 +30,7 @@
           "docs/guide/observability-audit",
           "docs/guide/identity-versioning",
           "docs/guide/reliability",
+          "docs/guide/durable-resume",
           "docs/guide/production-llm-gateway",
           "docs/guide/taint-and-trust",
           "docs/guide/safety-gauntlet",
