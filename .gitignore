@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Maintainer overlay — never tracked here
+private/
+docs/internal
+docs/superpowers
+docs/release-checklist.md
+AGENTS.override.md
+CLAUDE.local.md
+.env
+.env.*
+.private-journal/
+.repowise/
