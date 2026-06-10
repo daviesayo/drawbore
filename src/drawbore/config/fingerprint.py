@@ -18,6 +18,8 @@ from typing import Iterable
 
 from pydantic import BaseModel
 
+from drawbore._canon import canonical_fingerprint
+
 
 def schema_fingerprint(model: type[BaseModel]) -> str:
     """``"sha256:" + sha256(canonical-json(model.model_json_schema()))``.
@@ -25,8 +27,7 @@ def schema_fingerprint(model: type[BaseModel]) -> str:
     Canonical = ``sort_keys=True`` + compact separators, so the fingerprint is
     stable across runs and Python dict orderings.
     """
-    canonical = json.dumps(model.model_json_schema(), sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_fingerprint(model.model_json_schema())
 
 
 def footprint_fingerprint(facts: Iterable[tuple[str, str, str, str]]) -> str:
