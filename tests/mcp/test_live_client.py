@@ -33,7 +33,7 @@ def test_live_client_implements_the_mcpclient_abc():
     reason="the real mcp SDK is installed; the import-guard path is not exercised",
 )
 async def test_connect_without_mcp_installed_raises_a_legible_error():
-    # In the brief-named test env the real `mcp` SDK is absent: using the live
+    # In the default test env the real `mcp` SDK is absent: using the live
     # transport must fail closed with an actionable MCPError, not an opaque
     # ImportError.
     from drawbore.mcp import MCPError, MCPServerConfig

@@ -15,7 +15,7 @@ class Out(BaseModel):
     text: str
 
 
-async def test_completed_run_has_the_brief_acceptance_audit_shape():
+async def test_completed_run_has_the_acceptance_audit_shape():
     @agent(name="a", input=In, output=Out)
     async def a(v: In) -> Out:
         return Out(text=v.text)

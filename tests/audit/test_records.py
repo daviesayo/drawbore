@@ -19,7 +19,7 @@ def _record(status="completed", steps=2, escalations=0, schema_violations=0,
     )
 
 
-def test_audit_record_exposes_the_brief_acceptance_shape():
+def test_audit_record_exposes_the_acceptance_shape():
     # result.audit_trace.steps == 4, .escalations == 0, .schema_violations == 0
     rec = _record(steps=4)
     assert rec.steps == 4

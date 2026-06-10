@@ -11,7 +11,7 @@ class Out(BaseModel):
     y: int
 
 
-def test_agent_identity_carries_brief_attributes():
+def test_agent_identity_carries_required_attributes():
     idn = AgentIdentity(
         agent_id="agent-1",
         name="scorer",
