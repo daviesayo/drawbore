@@ -376,6 +376,58 @@ async def test_clean_resume_with_join_keeps_ledger_in_index_order():
 
 
 @pytest.mark.asyncio
+async def test_join_resume_not_refused_as_missing():
+    """A completed fan-in restored from checkpoint must not trip the
+    missing-seal refusal: joins are topology-covered, never sealed."""
+
+    class A(BaseModel):
+        x: int
+
+    def _mk(*, fail_after: bool = False):
+        @agent(input=Doc, output=A, name="pre", version="1.0.0")
+        async def pre(p: Doc) -> A:
+            CALLS["pre"] = CALLS.get("pre", 0) + 1
+            return A(x=1)
+
+        @agent(input=A, output=Verdict, name="after", version="1.0.0")
+        async def after(p: A) -> Verdict:
+            CALLS["after"] = CALLS.get("after", 0) + 1
+            if fail_after and CALLS["after"] == 1:
+                raise RuntimeError("first attempt fails after the join")
+            return Verdict(ok=True)
+
+        p = Pipeline("join-resume")
+        p.add(pre)
+        p.add(Join("merge", sources=["pre"], policy="first_by_priority", output=A))
+        p.add(after, inputs={"x": From("merge.x")})
+        return p
+
+    store = InMemoryCheckpointStore()
+    first = await _mk(fail_after=True).run(Doc(text="d"), run_id="j1", checkpoints=store)
+    assert first.status == "halted"
+
+    second = await _mk(fail_after=False).run(Doc(text="d"), run_id="j1", checkpoints=store)
+    assert second.status == "completed"
+    assert second.halt_code is None
+    # pre/join restored; only `after` re-ran.
+    assert CALLS["pre"] == 1 and CALLS["after"] == 2
+    joins = [e for e in second.resume_ledger.entries if e.agent == "merge"]
+    assert joins and joins[0].disposition == "restored" and joins[0].seal == "none"
+
+
+@pytest.mark.asyncio
+async def test_test_mode_carries_resume_ledger():
+    """TestPipeline.run flows through Pipeline.run, so the ledger is present
+    in test mode with no extra wiring."""
+    fetcher, scorer, writer = _fresh_agents()
+    p = _pipeline(fetcher, scorer, writer)
+    async with p.test_mode() as test:
+        result = await test.run(Doc(text="ok"))
+    assert result.resume_ledger is not None
+    assert result.resume_ledger.resumed is False
+
+
+@pytest.mark.asyncio
 async def test_ledger_legible_smoke():
     store = InMemoryCheckpointStore()
     fetcher, scorer, writer = _fresh_agents()
