@@ -26,7 +26,12 @@ _MAX_SEARCH_RESULTS = 100
 def register_evidence_tool(registry, *, store: EvidenceStore, ref: str = EVIDENCE_TOOL_REF) -> str:
     """Register the evidence retrieval tool into ``registry`` (``kind="builtin"``).
     Returns the tool ref. The handler routes to ``store`` and enforces per-handle
-    retrieval policy + expiry; the proxy enforces declaration/JIT/scope/breaker."""
+    retrieval policy + expiry; the proxy enforces declaration/JIT/scope/breaker.
+
+    Idempotent: if ``ref`` is already registered the call is a no-op and the
+    existing binding is preserved (the caller's existing handler wins)."""
+    if registry.has(ref):
+        return ref
 
     async def handler(args: Any) -> Any:
         if not isinstance(args, dict):
