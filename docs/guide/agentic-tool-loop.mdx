@@ -35,7 +35,10 @@ any other Drawbore tool — only the agent's *declared* tools exist, and the cal
 traced and audited. The model never gets to route around a control:
 
 - **Any tool failure or denial halts** the step and escalates with a legible reason
-  — the loop does not "recover" around a tripped control.
+  — the loop does not "recover" around a tripped control. A proxy denial keeps its own
+  halt code (for example `taint_violation` when the
+  [taint breaker](/guide/taint-and-trust) refuses an exfil-capable call, `token_violation`,
+  or `circuit_breaker`).
 - **The loop is bounded** (`max_llm_calls`, default 8) — a runaway loop halts.
 - **Drawbore owns the answer** — the model's final output is parsed and validated
   against your output model; a non-JSON answer fails closed.
@@ -55,7 +58,17 @@ Drawbore exposes each such tool to the model under a provider-safe alias and res
 the alias the model picks back to the canonical ref before the call runs. You keep
 writing the canonical ref; scope enforcement, the one-time token, the proxy log, and
 the audit trail all stay keyed on the canonical ref (the alias is only the name the
-provider sees). An alias the model invents that maps to no declared tool is refused.
+provider sees).
+
+The loop only ever offers the model the agent's *declared* tools. A call to anything else —
+an invented alias that maps to no declared tool, or a tool that is registered but not declared
+by this agent — never reaches the proxy, so it does not produce a proxy scope denial. It fails
+closed at the model boundary and halts `model_error`. (A deterministic agent that calls a
+registered-but-undeclared tool directly halts `tool_access` instead — same fail-closed outcome,
+different halt code.) For loop steps, alert on `model_error` for this case; see
+[Taint and trust](/guide/taint-and-trust) for how the breaker's `taint_violation` carries over
+to loop-invoked tools, and [Branching on a halt](/guide/reliability#branching-on-a-halt) for the
+full vocabulary.
 
 This composes with evidence compression: a compressed step's model can retrieve the
 full original mid-loop with the `evidence://retrieve` tool — scoped by the proxy, a
