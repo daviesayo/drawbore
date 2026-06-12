@@ -116,6 +116,20 @@ class CheckpointStore(ABC):
         """
         return TrustLabel.UNTRUSTED
 
+    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
+        """Store the pending human-approval request for ``run_id``. Default: no-op
+        (a store that does not persist approvals simply cannot resume one)."""
+        return None
+
+    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
+        """The pending approval request for ``run_id``, or ``None``. Default
+        ``None`` is fail-closed: no stored request means no decision can apply."""
+        return None
+
+    def clear_approval_request(self, run_id: str) -> None:
+        """Consume the pending request (single-use). Default: no-op."""
+        return None
+
 
 class InMemoryCheckpointStore(CheckpointStore):
     def __init__(self) -> None:
@@ -124,6 +138,7 @@ class InMemoryCheckpointStore(CheckpointStore):
         self._fingerprints: dict[str, str] = {}
         self._trust: dict[tuple[str, int], TrustLabel] = {}
         self._seals: dict[tuple[str, int], StepSeal] = {}
+        self._approvals: dict[str, "ApprovalRequest"] = {}
 
     def step_started(self, run_id: str, step: int) -> None:
         # No-op for the in-memory store: a process crash wipes it, so there is
@@ -168,3 +183,12 @@ class InMemoryCheckpointStore(CheckpointStore):
 
     def trust_of(self, run_id: str, step: int) -> TrustLabel:
         return self._trust.get((run_id, step), TrustLabel.UNTRUSTED)
+
+    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
+        self._approvals[run_id] = request
+
+    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
+        return self._approvals.get(run_id)
+
+    def clear_approval_request(self, run_id: str) -> None:
+        self._approvals.pop(run_id, None)
