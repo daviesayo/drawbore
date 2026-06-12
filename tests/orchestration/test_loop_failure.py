@@ -63,8 +63,10 @@ async def test_loop_bound_halts_a_runaway_loop(fake_adk_model):
 
 
 async def test_non_json_final_answer_fails_closed(fake_adk_model):
+    # A non-JSON turn triggers a single bounded reprompt; when the reprompt is ALSO
+    # non-JSON, the step fails closed (model_error).
     reg, proxy, bundle = _wiring()
-    script = [("final", "not json at all")]
+    script = [("final", "not json at all"), ("text", "still not json")]
     with pytest.raises(LLMError):
         await run_agentic_loop(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
                                model_factory=lambda name: fake_adk_model(script), max_llm_calls=8)

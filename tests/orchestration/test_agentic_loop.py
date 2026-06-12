@@ -75,11 +75,13 @@ async def test_loop_non_json_final_error_includes_bounded_excerpt(fake_adk_model
     async def solver(v: In) -> Out:
         raise AssertionError("must not run")
 
-    # A loop whose FINAL turn is raw, non-JSON text: it halts model_error, and the
-    # halt reason must now carry a bounded excerpt of the offending final content so
-    # the failure is diagnosable from the audit trail. (The loop is NOT retried — a
-    # post-tool re-run would replay tool side-effects; only the one-shot path retries.)
-    script = [("text", "<not json> " + "y" * 5000)]
+    # A loop whose turn is raw, non-JSON text triggers a single bounded reprompt; when
+    # the reprompt ALSO returns non-JSON prose, the step halts model_error and the halt
+    # reason carries a bounded excerpt of the offending content so the failure is
+    # diagnosable from the audit trail. (The loop is never re-run wholesale — a post-tool
+    # re-run would replay tool side-effects; the reprompt is a pure model turn.)
+    big = "<not json> " + "y" * 5000
+    script = [("text", big), ("text", big)]  # prose on the original turn AND the reprompt
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
         await run_agentic_loop(
@@ -125,9 +127,12 @@ async def test_loop_unrecoverable_prose_still_halts_model_error(fake_adk_model):
     async def solver(v: In) -> Out:
         raise AssertionError("must not run")
 
-    # Pure narration with no JSON object at all: nothing to recover -> fail closed.
+    # Pure narration with no JSON object at all: nothing to recover. The model narrates
+    # on the original turn AND on the single reprompt, so the step fails closed after the
+    # one bounded reprompt.
     script = [("call", "lookup", {"key": "x"}),
-              ("text", "The user wants this. I need to: 1. Call the tool. 2. Answer.")]
+              ("text", "The user wants this. I need to: 1. Call the tool. 2. Answer."),
+              ("text", "Still just narrating; no tool call and no JSON here either.")]
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
         await run_agentic_loop(
@@ -139,6 +144,96 @@ async def test_loop_unrecoverable_prose_still_halts_model_error(fake_adk_model):
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
 
 
+async def test_loop_reprompts_once_when_model_narrates_a_tool_call(captured_spans, fake_adk_model):
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # The reasoning-class failure mode: on a turn where the model should EMIT a
+    # structured tool call, it instead NARRATES its intent as prose (no function call).
+    # ADK surfaces that as a non-JSON final response. Drawbore must NOT parse the
+    # narrated call out of prose; it reprompts ONCE for a structured response, and the
+    # corrected second turn (a real tool call, then a JSON answer) completes the run.
+    # Realistic narration carries SEVERAL embedded JSON fragments (not one recoverable
+    # object), so the #22 sole-object recovery does not apply and the reprompt path runs.
+    narration = (
+        "The user wants me to enrich this. I need to: 1. Call `lookup` with "
+        '{"key": "x"} to fetch the record, then 2. validate it with {"strict": true}.'
+    )
+    script = [
+        ("text", narration),                            # pass 1: prose, NO tool call
+        ("call", "lookup", {"key": "y"}),               # pass 2 (after reprompt): real call
+        ("text", json.dumps({"answer": "done:42"})),    # pass 2: JSON final answer
+    ]
+    reg, proxy, bundle = _wiring()
+    output, model_turns = await run_agentic_loop(
+        solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+    )
+    assert output == {"answer": "done:42"}
+    # The tool ran EXACTLY ONCE — from the structured call in the reprompted turn, never
+    # from the narrated prose. (Had the narrated "call lookup" been executed too, lookup
+    # would appear twice.)
+    assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
+    # Three model turns total: the prose turn + the reprompt's call turn + its final turn.
+    assert model_turns == 3
+    assert len(bundle.turns) == 3
+
+
+async def test_loop_narrates_again_on_reprompt_halts_model_error(fake_adk_model):
+    from drawbore.llm import LLMError
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # The model narrates on BOTH the original turn and the single reprompt. Recovery is
+    # bounded to exactly one reprompt, so the step then fails closed (model_error); it
+    # never loops unbounded, and no tool is executed from either prose turn.
+    script = [
+        # Two embedded fragments (ambiguous) — not a recoverable sole object.
+        ("text", 'I will call `lookup` with {"key": "x"} then verify {"id": 7}.'),
+        ("text", "Okay, calling `lookup` now and returning the result."),
+        # A third turn exists but must NEVER be reached (only ONE reprompt is allowed).
+        ("text", json.dumps({"answer": "should-not-be-used"})),
+    ]
+    reg, proxy, bundle = _wiring()
+    with pytest.raises(LLMError) as ei:
+        await run_agentic_loop(
+            solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+        )
+    assert "content excerpt" in str(ei.value)
+    # Bounded: exactly TWO model turns happened (original + one reprompt), proving the
+    # loop did not keep reprompting and never reached the third scripted turn.
+    assert len(bundle.turns) == 2
+    # No tool was executed from either prose turn.
+    assert not any(e["tool"] == "lookup" for e in proxy.log)
+
+
+async def test_loop_no_reprompt_when_no_model_budget_remains(fake_adk_model):
+    from drawbore.llm import LLMError
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # max_llm_calls=1: the prose turn consumes the only budgeted model turn, so there is
+    # no budget left to reprompt — the step fails closed immediately, with no second turn.
+    script = [
+        # Ambiguous narration (two fragments) — not a recoverable sole object.
+        ("text", 'I will call `lookup` with {"key": "x"} then {"strict": true}.'),
+        ("text", json.dumps({"answer": "unreached"})),
+    ]
+    reg, proxy, bundle = _wiring()
+    with pytest.raises(LLMError):
+        await run_agentic_loop(
+            solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            model_factory=lambda name: fake_adk_model(script), max_llm_calls=1,
+        )
+    assert len(bundle.turns) == 1  # the reprompt was NOT attempted (budget exhausted)
+
+
 async def test_loop_ambiguous_multiple_json_objects_fails_closed(fake_adk_model):
     from drawbore.llm import LLMError
 
@@ -146,10 +241,11 @@ async def test_loop_ambiguous_multiple_json_objects_fails_closed(fake_adk_model)
     async def solver(v: In) -> Out:
         raise AssertionError("must not run")
 
-    # Two top-level JSON objects in the prose: Drawbore never guesses which to trust,
-    # so it fails closed rather than picking one.
+    # Two top-level JSON objects in the prose: Drawbore never guesses which to trust, so
+    # it reprompts once for a single structured response. The reprompt is ALSO ambiguous,
+    # so the step fails closed rather than picking one.
     prose = 'First {"answer": "a"} and then also {"answer": "b"}.'
-    script = [("text", prose)]
+    script = [("text", prose), ("text", prose)]  # ambiguous on the original turn AND the reprompt
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
         await run_agentic_loop(

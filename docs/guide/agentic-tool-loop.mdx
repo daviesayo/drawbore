@@ -46,9 +46,19 @@ traced and audited. The model never gets to route around a control:
   exclusive), so a model that narrates before answering may wrap its JSON in prose. If
   the final answer holds exactly one top-level JSON object, Drawbore extracts it
   deterministically and the step proceeds — a pure re-parse of what the model already
-  said, so no tool is re-invoked. If it holds no JSON object, or more than one
-  (ambiguous), the step fails closed and halts `model_error` with a bounded excerpt of
-  the offending content; Drawbore never guesses which object to trust.
+  said, so no tool is re-invoked.
+- **A turn that narrates a tool call earns one reprompt** — sometimes a model returns
+  prose describing what it intends to do ("I will call `lookup` with …") instead of
+  emitting a structured tool call, or returns prose with no usable JSON answer. Drawbore
+  never parses or executes a tool out of that prose — a tool runs only when the model
+  emits a real structured call. Instead, it reprompts the **same** model **once**,
+  asking it to respond with either a structured tool call or a single JSON answer and
+  nothing else; the corrected turn then continues the normal loop. The reprompt is a
+  pure model turn (it counts against `max_llm_calls` and never replays a tool side
+  effect) and happens **at most once per stuck turn**. If the reprompt still yields
+  neither a tool call nor valid JSON — or if the content holds more than one (ambiguous)
+  top-level object — the step fails closed and halts `model_error` with a bounded excerpt
+  of the offending content; Drawbore never guesses which object to trust.
 
 The number of model turns and every tool call are in the audit trail:
 

@@ -77,15 +77,20 @@ model before halting — a single, always-on, bounded retry, not a fallback and 
 toggle. If the retry still returns unusable output the step halts with `model_error`:
 halt-and-escalate is never weakened. A structural mismatch (a response of the wrong
 shape, or valid JSON that is not an object) is not transient and fails closed
-immediately. A model+tools tool-loop step is not retried this way, because re-running a
-loop could replay tool side effects. Instead, because a tool-loop step cannot pin the
-model to JSON-only output on its final turn (provider-side JSON mode and offering tools
-are mutually exclusive, so a `response_format` set in `extra` does not constrain the
+immediately. A model+tools tool-loop step is not re-run wholesale this way, because
+replaying a loop could replay tool side effects. Instead, because a tool-loop step cannot
+pin the model to JSON-only output on its final turn (provider-side JSON mode and offering
+tools are mutually exclusive, so a `response_format` set in `extra` does not constrain the
 loop's tool-selecting turns), the loop recovers a final answer that wraps exactly one
 top-level JSON object in prose by extracting that object deterministically — a pure
-re-parse of what the model already produced, with no tool re-invoked. A final answer
-with no JSON object, or more than one, still halts `model_error` with the bounded
-excerpt.
+re-parse of what the model already produced, with no tool re-invoked. When a turn instead
+returns prose with no usable tool call or JSON answer (for example a reasoning model that
+*narrates* a tool call rather than emitting one), the loop reprompts the **same** model
+**once** for a structured tool call or a JSON object — never parsing or executing a tool
+out of the prose, and bounded by the remaining `max_llm_calls` budget. If the single
+reprompt still yields neither a tool call nor valid JSON — or if the answer holds more
+than one (ambiguous) top-level object — the step halts `model_error` with the bounded
+excerpt, naming that the model narrated instead of emitting a structured call.
 
 **Model+tools loops fall back safely.** A model+tools agent resolves through the same
 runtime. Provider failure *before any tool call* may try the next model; once a tool

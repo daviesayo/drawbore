@@ -60,6 +60,22 @@ from .engine import ToolLoopBundle, provider_safe_tool_aliases
 _APP = "drawbore"
 
 
+def _reprompt_text(aliases: dict[str, str]) -> str:
+    """The single bounded reprompt sent when a turn returns prose instead of a
+    structured tool call or a JSON answer. It asks the model to respond with EITHER a
+    structured tool call OR the final JSON object and nothing else — it never parses or
+    executes anything out of the prose; the model must emit a real structured tool call
+    for any tool to run. The declared tool names are restated to steer the next turn."""
+    names = ", ".join(sorted(aliases.values()))
+    tool_clause = f" The available tools are: {names}." if names else ""
+    return (
+        "Your previous message was prose and contained neither a structured tool call "
+        "nor a final answer. Respond now with EITHER a single structured tool call OR "
+        "the final answer as one JSON object, and nothing else — do not narrate, "
+        f"explain, or add any text outside the JSON.{tool_clause}"
+    )
+
+
 @dataclass(frozen=True)
 class LoopResult:
     """The result of an agentic loop run over a (possibly multi-attempt) chain.
@@ -82,11 +98,20 @@ async def _run_one_attempt(
     model_factory: Callable[[str], Any],
     max_llm_calls: int,
 ) -> tuple[dict, int]:
-    """Run a SINGLE loop pass on one concrete ``model`` and return
+    """Run a loop attempt on one concrete ``model`` and return
     ``(output_dict, model_turns)``. ``output_dict`` is the model's final JSON (the
     pipeline validates it). Raises the captured tool failure (immediate abort) or
     ``LLMError`` on non-JSON / loop exhaustion. The chain driver calls this once per
-    attempt."""
+    provider attempt.
+
+    Within the attempt the model gets at most ONE bounded reprompt: when a turn returns
+    prose with no usable tool call or JSON answer (a model that narrates a tool call
+    rather than emitting one is indistinguishable from a malformed final answer — both
+    surface as non-JSON text), Drawbore re-asks the SAME model on the SAME session for a
+    structured tool call or a JSON object. It never parses or executes a tool out of the
+    prose; a tool runs only if the model emits a real structured call. The reprompt is
+    bounded by the remaining ``max_llm_calls`` budget and happens exactly once — if it
+    still yields neither a tool call nor valid JSON, the attempt halts ``model_error``."""
     request = build_model_request(spec, payload, model_chain=(model,))
 
     # Expose each declared tool to the model under a provider-safe ALIAS (a function
@@ -118,7 +143,55 @@ async def _run_one_attempt(
     await session_service.create_session(app_name=_APP, user_id=run_id, session_id=session_id)
     runner = Runner(agent=loop_agent, app_name=_APP, session_service=session_service)
 
+    # First pass: the model's original prompt.
     message = types.Content(role="user", parts=[types.Part(text=request.user)])
+    final_text = await _consume_pass(
+        spec, runner, run_id=run_id, session_id=session_id, message=message,
+        tool_loop=tool_loop, max_llm_calls=max_llm_calls,
+    )
+    status, value = _parse_loop_final(spec, final_text)
+    if status == "ok":
+        return value, len(tool_loop.turns)
+
+    # status == "reprompt": the turn returned prose with no usable tool call or JSON
+    # answer (a turn that narrates a tool call instead of emitting one looks identical to
+    # a malformed final answer — both surface as non-JSON text). Drawbore does NOT parse
+    # the narrated call out of prose; it reprompts ONCE for a structured response. The
+    # reprompt is a pure MODEL turn on the same session — no tool runs unless the model
+    # emits a real structured call — and it is bounded by the remaining model-turn budget.
+    remaining = max_llm_calls - len(tool_loop.turns)
+    if remaining < 1:
+        raise _narrated_halt(spec, final_text, value)  # no budget left — fail closed
+    reprompt = types.Content(role="user", parts=[types.Part(text=_reprompt_text(aliases))])
+    final_text = await _consume_pass(
+        spec, runner, run_id=run_id, session_id=session_id, message=reprompt,
+        tool_loop=tool_loop, max_llm_calls=remaining,
+    )
+    status, value = _parse_loop_final(spec, final_text)
+    if status == "ok":
+        return value, len(tool_loop.turns)
+    # Still prose after the single bounded reprompt — fail closed (model_error). Recovery
+    # is exactly one reprompt; the loop never reprompts again.
+    raise _narrated_halt(spec, final_text, value)
+
+
+async def _consume_pass(
+    spec: AgentSpec,
+    runner: "Runner",
+    *,
+    run_id: str,
+    session_id: str,
+    message: "types.Content",
+    tool_loop: ToolLoopBundle,
+    max_llm_calls: int,
+) -> str | None:
+    """Drive ONE ``runner.run_async`` pass over ``message`` and return the model's final
+    text (``None`` when the pass produced no final response — loop-call exhaustion).
+
+    Raises the captured tool failure (immediate abort) or a multicall ``LLMError``; a raw
+    provider/ADK exception is re-raised unwrapped so the chain driver can classify it.
+    The same session/runner is reused across passes, so a reprompt continues the
+    conversation with prior context; ``max_llm_calls`` bounds THIS pass."""
     final_text: str | None = None
     multicall_error: LLMError | None = None      # set if a turn emits >1 function call
     try:
@@ -143,7 +216,7 @@ async def _run_one_attempt(
                 break
             if event.is_final_response() and event.content and event.content.parts:
                 final_text = event.content.parts[0].text
-    except Exception as exc:
+    except Exception:
         # If a tool failure was captured, prefer the precise tool error.
         if tool_loop.failures:
             raise tool_loop.failures[0]
@@ -157,37 +230,53 @@ async def _run_one_attempt(
         raise tool_loop.failures[0]
     if multicall_error is not None:              # >1 tool call in one turn — fail closed
         raise multicall_error
+    return final_text
+
+
+def _parse_loop_final(spec: AgentSpec, final_text: str | None) -> tuple[str, Any]:
+    """Classify the loop pass's final text. Returns one of:
+
+      ``("ok", dict)``    — the final answer parsed as a JSON object, or was recovered by
+                            the deterministic sole-top-level-object extraction (a pure
+                            re-parse of content the model already produced — it invokes no
+                            tool and makes no further model call).
+      ``("reprompt", exc)`` — the content is prose that is not a JSON object and holds
+                            zero, or more than one (ambiguous), top-level object; the model
+                            narrated instead of emitting a tool call or a JSON answer. The
+                            caller may issue ONE bounded reprompt before failing closed.
+
+    Raises ``LLMError`` for the failures that are NOT reprompt-recoverable: no final
+    response (loop-call exhaustion) and valid JSON that is not an object."""
     if final_text is None:
         raise LLMError(
             f"agentic loop for agent '{spec.name}' produced no final response "
-            f"(possible loop-call limit {max_llm_calls})"
+            f"(possible loop-call limit reached)"
         )
     try:
         output = json.loads(final_text)
     except (json.JSONDecodeError, TypeError) as exc:
-        # The model cannot be put in JSON-only output mode on the loop's final-answer
-        # turn (structured output and offering tools are mutually exclusive), so a
-        # model that narrates before answering wraps its JSON in prose. Attempt ONE
-        # deterministic recovery: if the content holds EXACTLY ONE top-level JSON
-        # object, extract it. This is a pure parse of content the model ALREADY
-        # produced — it invokes no tool and makes no further model call, so it cannot
-        # replay a tool side-effect (which is why the loop itself is never re-run). It
-        # fails closed when the content holds zero, or more than one (ambiguous),
-        # top-level object — Drawbore never guesses which to trust.
         recovered = _sole_top_level_json_object(final_text)
         if recovered is not None:
-            return recovered, len(tool_loop.turns)
-        # Unrecoverable: surface a bounded excerpt of the offending final content so the
-        # failure is diagnosable from the halt reason / audit, then halt (model_error).
-        raise LLMError(
-            f"agent '{spec.name}' loop returned non-JSON content: {exc} "
-            f"(content excerpt: {content_excerpt(final_text)})"
-        ) from exc
+            return "ok", recovered
+        return "reprompt", exc
     if not isinstance(output, dict):
         raise LLMError(
             f"agent '{spec.name}' loop returned JSON that is not an object: {type(output).__name__}"
         )
-    return output, len(tool_loop.turns)
+    return "ok", output
+
+
+def _narrated_halt(spec: AgentSpec, final_text: str | None, exc: Exception) -> LLMError:
+    """The ``model_error`` for a loop that returned prose with no usable tool call or JSON
+    answer even after the single bounded reprompt. The reason names the narration (so an
+    operator knows the model described a call instead of emitting one) and carries a
+    bounded excerpt of the offending content for diagnosis from the halt reason / audit."""
+    return LLMError(
+        f"agent '{spec.name}' loop returned prose with no tool call or JSON answer "
+        f"(the model narrated instead of emitting a structured tool call); a single "
+        f"reprompt for a structured response also failed: {exc} "
+        f"(content excerpt: {content_excerpt(final_text)})"
+    )
 
 
 async def run_agentic_loop(
