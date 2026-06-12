@@ -11,6 +11,7 @@ from drawbore.evidence import (
     register_evidence_tool, EVIDENCE_TOOL_REF,
 )
 from drawbore.tools import ToolRegistry
+from drawbore.orchestration.engine import provider_safe_tool_aliases
 
 
 class Row(BaseModel):
@@ -58,8 +59,11 @@ async def test_compressed_loop_agent_retrieves_the_original_via_the_proxy_tool(f
     async def screen(v: In) -> Out:
         raise AssertionError("must not run")
 
+    # A real provider calls the tool under its provider-safe alias, not the raw
+    # ``evidence://`` ref; the loop resolves the alias back to the canonical ref.
+    evidence_alias = provider_safe_tool_aliases((EVIDENCE_TOOL_REF,))[EVIDENCE_TOOL_REF]
     script = [
-        ("call", EVIDENCE_TOOL_REF, {"handle_id": "seed-h1", "mode": "search", "query": "990"}),
+        ("call", evidence_alias, {"handle_id": "seed-h1", "mode": "search", "query": "990"}),
         ("final", json.dumps({"answer": "screened"})),
     ]
     p = Pipeline(name="aml", registry=reg)

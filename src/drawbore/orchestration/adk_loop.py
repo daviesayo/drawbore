@@ -54,7 +54,7 @@ from .adk_tools import (
     make_loop_model_callbacks,
     proxy_backed_tool,
 )
-from .engine import ToolLoopBundle
+from .engine import ToolLoopBundle, provider_safe_tool_aliases
 
 _APP = "drawbore"
 
@@ -88,9 +88,14 @@ async def _run_one_attempt(
     attempt."""
     request = build_model_request(spec, payload, model_chain=(model,))
 
+    # Expose each declared tool to the model under a provider-safe ALIAS (a function
+    # name a provider can represent); the proxy-backed callable still invokes the
+    # CANONICAL ref, so scope/JIT/audit are unchanged. The before-tool guard derives
+    # the same aliases from the same declared tuple, so the two always agree.
+    aliases = provider_safe_tool_aliases(tool_loop.declared)
     tools = [
         proxy_backed_tool(
-            ref, proxy=tool_loop.proxy, issuer=tool_loop.issuer,
+            ref, name=aliases[ref], proxy=tool_loop.proxy, issuer=tool_loop.issuer,
             run_ctx=tool_loop.run_ctx, schema=_schema_of(tool_loop.registry, ref),
             failures=tool_loop.failures,
         )

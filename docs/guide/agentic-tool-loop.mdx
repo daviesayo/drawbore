@@ -48,6 +48,15 @@ print(step.model_turns)   # e.g. 3
 print(step.tool_calls)    # ('risk_lookup (invoke) -> ok', ...)
 ```
 
+A tool ref the model cannot name verbatim still works. Function-calling providers
+restrict a tool's name to letters, digits, `_`, and `-`, so a ref like
+`mcp://sanctions_feed/latest_updates` or `evidence://retrieve` cannot be sent as-is.
+Drawbore exposes each such tool to the model under a provider-safe alias and resolves
+the alias the model picks back to the canonical ref before the call runs. You keep
+writing the canonical ref; scope enforcement, the one-time token, the proxy log, and
+the audit trail all stay keyed on the canonical ref (the alias is only the name the
+provider sees). An alias the model invents that maps to no declared tool is refused.
+
 This composes with evidence compression: a compressed step's model can retrieve the
 full original mid-loop with the `evidence://retrieve` tool — scoped by the proxy, a
 handle is not authority.

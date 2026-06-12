@@ -18,6 +18,8 @@ from google.genai import types
 from drawbore.observability import genai_span, semconv
 from drawbore.tools import RunContext, TokenIssuer, ToolProxy
 
+from .engine import provider_safe_tool_aliases
+
 
 def as_adk_tool(
     tool_ref: str, *, proxy: ToolProxy, issuer: TokenIssuer, run_ctx: RunContext
@@ -85,11 +87,18 @@ class _ProxyBackedTool(BaseTool):
     """A declared Drawbore tool exposed to ADK with a registry-schema declaration,
     executed ONLY through ``proxy.invoke`` with a single-use JIT token. On any
     failure it records the exception in ``failures`` (immediate-abort signal) and
-    re-raises so ADK also sees the failure."""
+    re-raises so ADK also sees the failure.
 
-    def __init__(self, tool_ref, *, proxy, issuer, run_ctx, schema, failures):
+    The tool is exposed to the model under a provider-safe ALIAS ``name`` (a function
+    name a provider can represent), while every authoritative action — token issuance,
+    ``proxy.invoke``, the proxy/audit log — uses the canonical ``tool_ref``. The model
+    selects the alias; Drawbore resolves it back to the canonical ref by construction
+    (the callable closes over ``tool_ref``), so scope enforcement and audit are
+    unchanged."""
+
+    def __init__(self, tool_ref, *, name, proxy, issuer, run_ctx, schema, failures):
         description = f"Drawbore tool {tool_ref}"
-        super().__init__(name=tool_ref, description=description)
+        super().__init__(name=name, description=description)
         self._ref = tool_ref
         self._description = description
         self._proxy = proxy
@@ -100,7 +109,7 @@ class _ProxyBackedTool(BaseTool):
 
     def _get_declaration(self):
         return types.FunctionDeclaration(
-            name=self._ref,
+            name=self.name,
             description=self._description,
             parameters=_schema_to_genai(self._schema),
         )
@@ -121,17 +130,20 @@ class _ProxyBackedTool(BaseTool):
 
 
 def proxy_backed_tool(
-    tool_ref: str, *, proxy: ToolProxy, issuer: TokenIssuer, run_ctx: RunContext,
-    schema: dict | None, failures: list,
+    tool_ref: str, *, name: str | None = None, proxy: ToolProxy, issuer: TokenIssuer,
+    run_ctx: RunContext, schema: dict | None, failures: list,
 ) -> BaseTool:
     """Build the proxy-backed, schema-backed ADK tool for one declared ref.
 
     The tool's declaration is derived from the registry tool's JSON ``schema`` so
-    the model sees its parameters; execution routes through ``proxy.invoke`` with a
+    the model sees its parameters; the tool is exposed under the provider-safe
+    ``name`` (defaulting to the sanitized alias of ``tool_ref`` when omitted), while
+    execution routes through ``proxy.invoke`` on the canonical ``tool_ref`` with a
     single-use JIT token; any failure is recorded in ``failures`` (immediate-abort
     signal) and re-raised so ADK also sees it."""
+    exposed = name if name is not None else provider_safe_tool_aliases((tool_ref,))[tool_ref]
     return _ProxyBackedTool(
-        tool_ref, proxy=proxy, issuer=issuer, run_ctx=run_ctx,
+        tool_ref, name=exposed, proxy=proxy, issuer=issuer, run_ctx=run_ctx,
         schema=schema, failures=failures,
     )
 
@@ -205,8 +217,14 @@ def make_loop_before_tool_callback(bundle):
     driver can tell a pre-tool provider failure (may fall back) from a post-tool one
     (must fail closed). A DENIED tool (undeclared, or after a prior failure) does NOT
     mark ``tool_invoked`` — only a tool that actually proceeds counts as having run.
-    """
-    undeclared_guard = make_before_tool_callback(bundle.declared)
+
+    The model sees each tool under its provider-safe ALIAS, so the undeclared guard is
+    keyed on the alias set (derived from ``bundle.declared`` via the same function the
+    tool builder uses, so the two always agree). A model-invented alias that maps to
+    no declared tool is blocked here as undeclared (and ADK, finding no matching tool,
+    also fails the call); either way the loop halts and never reaches the proxy."""
+    exposed_names = tuple(provider_safe_tool_aliases(bundle.declared).values())
+    undeclared_guard = make_before_tool_callback(exposed_names)
 
     def before_tool(tool, args, tool_context):
         if bundle.failures:
