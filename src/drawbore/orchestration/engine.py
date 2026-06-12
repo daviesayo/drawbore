@@ -8,6 +8,7 @@ only inside this package's adapter, never elsewhere.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,53 @@ if TYPE_CHECKING:
     # safe under `from __future__ import annotations`; a future
     # get_type_hints(StepExecution) call in a cold-import context would NameError.
     from drawbore.llm import ModelAudit, TokenUsage
+
+
+# A function-calling provider restricts a tool's NAME to a small charset (OpenAI's
+# documented set is ``a-z A-Z 0-9 _ -``, max length 64; the engine's own function
+# declaration is similarly bounded). A tool ref such as ``mcp://server/tool`` cannot
+# be represented, so the in-step tool loop exposes each tool to the model under a
+# sanitized ALIAS and maps the model's chosen alias back to the canonical ref before
+# invoking the proxy. The alias is a DISPLAY name for the provider only — scope
+# enforcement, the JIT token, the proxy log, and the audit trail all stay keyed on
+# the canonical ref.
+_TOOL_NAME_MAX = 64
+_UNSAFE_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _sanitize_tool_name(ref: str) -> str:
+    """Deterministically reduce one tool ref to the provider-safe charset.
+
+    Every character outside ``[A-Za-z0-9_-]`` becomes ``_``; the result is bounded
+    to 64 characters and forced to start with a letter or underscore (the provider /
+    engine declaration constraint). Pure string logic — no engine import."""
+    name = _UNSAFE_TOOL_NAME_CHARS.sub("_", ref)[:_TOOL_NAME_MAX]
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        name = f"t_{name}"[:_TOOL_NAME_MAX]
+    return name
+
+
+def provider_safe_tool_aliases(declared: tuple[str, ...]) -> dict[str, str]:
+    """Map each declared canonical tool ref to a provider-safe alias name.
+
+    Deterministic and collision-free across the declared set: refs that sanitize to
+    the same base are disambiguated by a stable numeric suffix (assigned in declared
+    order). The returned mapping is ``{canonical_ref: alias}``; both the loop's tool
+    builder and its before-tool guard derive aliases from the same declared tuple via
+    this function, so they always agree."""
+    aliases: dict[str, str] = {}
+    used: set[str] = set()
+    for ref in declared:
+        base = _sanitize_tool_name(ref)
+        alias = base
+        n = 2
+        while alias in used:
+            suffix = f"_{n}"
+            alias = f"{base[:_TOOL_NAME_MAX - len(suffix)]}{suffix}"
+            n += 1
+        used.add(alias)
+        aliases[ref] = alias
+    return aliases
 
 
 @dataclass

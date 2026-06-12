@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from drawbore.agent import AgentSpec
 from drawbore.llm import CredentialChecker, LLMGateway, LLMRuntime, LLMRuntimeConfig, TokenUsage
 from drawbore.orchestration import ADKEngine, OrchestratorEngine, ToolLoopBundle, make_scripted_model_factory
+from drawbore.orchestration.engine import provider_safe_tool_aliases
 
 from .credentials import StaticCredentialChecker
 from .errors import TestingError
@@ -30,6 +31,25 @@ from .loop import to_turns
 # Distinguishes "no mock for this agent" from "mock present with value None" so the
 # latter still fails closed. Module-level identity, compared within run_step.
 _MISSING = object()
+
+
+def _alias_call_names(turns: list[tuple], aliases: dict[str, str]) -> list[tuple]:
+    """Rewrite the tool name in each scripted ``call``/``multicall`` turn from a
+    canonical ref to its provider-safe alias, matching what the loop exposes to the
+    model. A name absent from ``aliases`` (an undeclared/invented tool) is left as-is
+    so the loop still fails closed on it. ``text`` turns are untouched."""
+    out: list[tuple] = []
+    for turn in turns:
+        kind = turn[0]
+        if kind == "call":
+            _, name, args = turn
+            out.append(("call", aliases.get(name, name), args))
+        elif kind == "multicall":
+            _, calls = turn
+            out.append(("multicall", [(aliases.get(n, n), a) for n, a in calls]))
+        else:
+            out.append(turn)
+    return out
 
 
 class _RaisingGateway(LLMGateway):
@@ -77,7 +97,16 @@ class TestEngine(OrchestratorEngine):
                     f"no mock loop script for model+tools agent '{spec.name}' "
                     f"(add it to mock_loop_scripts=)"
                 )
-            factory = make_scripted_model_factory(to_turns(self._loop_scripts[spec.name]))
+            # A real provider sees each tool under its provider-safe alias and calls
+            # the alias, never the raw ``mcp://``/``evidence://`` ref. The scripted
+            # model faithfully simulates this: a loop script may name tools by their
+            # canonical ref (the readable form a test author writes), and we rewrite
+            # those call names to the same aliases the loop exposes before driving the
+            # fake model. A name that is not a declared ref passes through unchanged
+            # (so an invented/undeclared tool still fails closed in the loop).
+            aliases = provider_safe_tool_aliases(tuple(spec.tools))
+            turns = _alias_call_names(to_turns(self._loop_scripts[spec.name]), aliases)
+            factory = make_scripted_model_factory(turns)
             # The runtime resolves the chain (so a profile-backed loop agent resolves via
             # config + fake checker) and drives the REAL ADK loop with the scripted model
             # factory; the scripted factory ignores the model name.

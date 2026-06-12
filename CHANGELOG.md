@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline supplies each step's live output model at run start so a serialising
   store can reconstruct typed outputs safely. Existing stores need no change.
 
+### Fixed
+- A model-backed agent that declares a tool whose ref is not a valid provider
+  function name — an MCP tool (`mcp://server/tool`) or the evidence retrieval tool
+  (`evidence://retrieve`) — no longer breaks the agentic tool loop on
+  OpenAI-compatible providers. Function-calling providers restrict tool names to
+  letters, digits, `_`, and `-`, so such refs could not be represented and the
+  model's call failed to resolve. The loop now exposes each tool to the model under
+  a deterministic, collision-free provider-safe alias and resolves the alias back to
+  the canonical ref before the call runs. Scope enforcement, the one-time token, the
+  proxy log, and the audit trail stay keyed on the canonical ref; an alias that maps
+  to no declared tool is still refused. Documented in the agentic tool loop guide.
+
 ## [0.3.0] - 2026-06-12
 
 ### Added
