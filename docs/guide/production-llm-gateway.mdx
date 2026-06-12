@@ -67,6 +67,19 @@ decision. Auth/config problems halt with `model_config_error`; a model returning
 unusable output halts with `model_error`; an exhausted chain halts with
 `model_unavailable`. Drawbore never falls back on a broken contract by default.
 
+**A non-JSON response is diagnosable, and retried once.** When a model returns a 200
+whose body is empty or not the JSON object the step expects, the `model_error` reason
+now carries a short, bounded excerpt of that offending output (the model's own failed
+text, truncated to a fixed length), so the failure is diagnosable from the halt reason
+and audit record without dumping unbounded content. Because an empty or truncated body
+is often a transient hiccup, a one-shot model call is re-attempted **once** on the same
+model before halting — a single, always-on, bounded retry, not a fallback and not a
+toggle. If the retry still returns unusable output the step halts with `model_error`:
+halt-and-escalate is never weakened. A structural mismatch (a response of the wrong
+shape, or valid JSON that is not an object) is not transient and fails closed
+immediately. A model+tools tool-loop step is not retried this way, because re-running a
+loop could replay tool side effects.
+
 **Model+tools loops fall back safely.** A model+tools agent resolves through the same
 runtime. Provider failure *before any tool call* may try the next model; once a tool
 has run, a provider failure fails closed — Drawbore will not replay tool side effects

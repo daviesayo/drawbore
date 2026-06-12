@@ -19,11 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconstructed from the live pipeline's output schema, never from a class path
   read off disk, so a tampered checkpoint cannot trigger an arbitrary import.
   Stdlib only. Documented in the durable-resume guide.
+- A non-JSON or empty model response on a one-shot model call is now re-attempted
+  once on the same model before halting. This single, always-on, bounded retry
+  clears the common transient case (an empty or truncated body) without a flag and
+  without changing failure behaviour: a still-unusable response after the retry
+  still halts with `model_error`, and a structural mismatch (wrong shape, or valid
+  JSON that is not an object) still fails closed immediately with no retry. A
+  model+tools tool-loop step is not retried, because re-running a loop could replay
+  tool side effects. Documented in the production LLM gateway guide.
 
 ### Changed
 - `CheckpointStore` gains an optional `bind_models` hook (default no-op). The
   pipeline supplies each step's live output model at run start so a serialising
   store can reconstruct typed outputs safely. Existing stores need no change.
+- A `model_error` from a non-JSON or empty model response now includes a short,
+  bounded excerpt of the offending output in its halt reason (and so in the audit
+  record), so the failure is diagnosable without re-running. The excerpt is the
+  model's own failed text, truncated to a fixed length; it is never an unbounded
+  dump of model content. Documented in the production LLM gateway guide.
 
 ### Fixed
 - Provider runtime config now reaches the agentic tool loop. A `ProviderConfig`'s

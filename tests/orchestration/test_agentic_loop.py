@@ -66,3 +66,27 @@ async def test_loop_handles_two_sequential_tool_calls(fake_adk_model):
     assert output == {"answer": "two"}
     assert model_turns == 3
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 2
+
+
+async def test_loop_non_json_final_error_includes_bounded_excerpt(fake_adk_model):
+    from drawbore.llm import LLMError
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # A loop whose FINAL turn is raw, non-JSON text: it halts model_error, and the
+    # halt reason must now carry a bounded excerpt of the offending final content so
+    # the failure is diagnosable from the audit trail. (The loop is NOT retried — a
+    # post-tool re-run would replay tool side-effects; only the one-shot path retries.)
+    script = [("text", "<not json> " + "y" * 5000)]
+    reg, proxy, bundle = _wiring()
+    with pytest.raises(LLMError) as ei:
+        await run_agentic_loop(
+            solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+        )
+    msg = str(ei.value)
+    assert "content excerpt" in msg
+    assert "<not json>" in msg
+    assert len(msg) < 1000                   # bounded: the 5000-char body is not dumped

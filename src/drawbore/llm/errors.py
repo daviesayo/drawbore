@@ -4,6 +4,30 @@ from __future__ import annotations
 
 from drawbore.errors import DrawboreError
 
+# Bound for a surfaced excerpt of a model's offending raw output. Small and fixed:
+# enough to diagnose an empty / truncated / non-JSON body, never an unbounded dump.
+CONTENT_EXCERPT_LIMIT = 200
+
+
+def content_excerpt(content: object, *, limit: int = CONTENT_EXCERPT_LIMIT) -> str:
+    """A bounded, log-safe excerpt of a model's offending raw output.
+
+    Surfaced in a ``model_error`` reason so a non-JSON / empty / truncated response
+    is diagnosable from the halt reason and audit record without dumping unbounded
+    model output. The result is the ``repr`` of at most ``limit`` characters (repr
+    keeps an empty string, whitespace, and control characters visible and on one
+    line), with a trailing marker noting how many characters were clipped. ``None``
+    renders as ``<no content>``. This is the model's OWN failed output (not user
+    input); it is bounded so it can never become an unbounded log of model content.
+    """
+    if content is None:
+        return "<no content>"
+    text = content if isinstance(content, str) else str(content)
+    rendered = repr(text[:limit])
+    if len(text) > limit:
+        rendered += f" (+{len(text) - limit} more chars)"
+    return rendered
+
 
 class LLMError(DrawboreError):
     """Base class for model-boundary errors.
@@ -16,6 +40,18 @@ class LLMError(DrawboreError):
     """
 
     halt_reason = "model_error"
+
+
+class _RetryableContractError(LLMError):
+    """A contract violation that is safely re-attemptable for a SIDE-EFFECT-FREE
+    one-shot completion: a 200 carrying no usable text (empty / null / non-JSON
+    body), the kind of transient failure a single immediate re-call routinely
+    clears. Internal to the gateway retry path — never part of the public taxonomy
+    and never raised on the tool-loop path (re-running a loop would replay tool
+    side-effects). It is still an ``LLMError`` (``model_error``): after the single
+    bounded retry is exhausted the gateway re-raises it and the pipeline halts. It
+    is NOT a structural fault (unexpected response shape / non-object JSON), which
+    a retry would not fix and which therefore fails closed immediately."""
 
 
 class ModelUnavailableError(LLMError):

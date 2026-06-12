@@ -13,7 +13,7 @@ from .config import (
     ProviderConfig,
 )
 from .credentials import CredentialChecker, EnvCredentialChecker
-from .errors import LLMConfigError, LLMError, ModelUnavailableError
+from .errors import LLMConfigError, LLMError, ModelUnavailableError, content_excerpt
 from .gateway import LLMGateway, LiteLLMGateway
 from .production import ProductionLLMGateway
 from .request import ModelRequest, ModelResponse
@@ -32,6 +32,7 @@ __all__ = [
     "LLMError",
     "LLMConfigError",
     "ModelUnavailableError",
+    "content_excerpt",
     "LLMRuntimeConfig",
     "ModelProfile",
     "ModelTarget",
