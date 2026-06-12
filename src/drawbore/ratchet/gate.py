@@ -80,18 +80,31 @@ async def admit(
         corpus.verify()
     except CorpusIntegrityError as exc:
         return _reject("corpus_integrity", reason=str(exc))
+    if not corpus.cases():
+        return _reject(
+            "corpus_integrity",
+            reason=(
+                "the regression corpus is empty — replay would be vacuous and "
+                "admission would degrade to authority-only; seed the corpus with "
+                "derive_cases under a named sponsor first"
+            ),
+        )
     try:
         mocks_hash = mocks_fingerprint(baseline_mocks)
     except RatchetError as exc:
         return _reject("corpus_integrity", reason=str(exc))
     initial_hash = canonical_fingerprint(initial_input.model_dump(mode="json"))
+    baseline_fp = canonical_fingerprint(baseline_config.model_dump(mode="json"))
     for case in corpus.cases():
-        if case.initial_hash != initial_hash or case.baseline_mocks_hash != mocks_hash:
+        if (case.initial_hash != initial_hash
+                or case.baseline_mocks_hash != mocks_hash
+                or case.baseline_fingerprint != baseline_fp):
             return _reject(
                 "corpus_integrity",
                 reason=(
                     f"replay inputs do not match what case {case.case_id!r} pinned "
-                    f"at derivation (initial and mock bundle are frozen with the chain)"
+                    f"at derivation (baseline manifest, initial, and mock bundle "
+                    f"are frozen with the chain)"
                 ),
             )
 

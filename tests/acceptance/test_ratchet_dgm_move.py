@@ -206,7 +206,8 @@ async def test_the_benign_tightening_admits_with_dedup_no_op_growth():
     )
     assert verdict.admitted is True
     assert verdict.pipeline is not None
-    assert verdict.corpus_root_after is None            # growth dedup'd to a no-op
+    # growth is a no-op here: the candidate's loop step has no script in the pinned bundle, so the growth run fails closed and admission stands (the dedup path itself is covered by the gate unit tests)
+    assert verdict.corpus_root_after is None
     assert corpus.root() == root
     # adoption is reference replacement:
     active = verdict.pipeline

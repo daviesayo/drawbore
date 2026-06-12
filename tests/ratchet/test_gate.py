@@ -154,3 +154,35 @@ async def test_tampered_corpus_rejects_before_any_replay():
     )
     assert verdict.admitted is False
     assert verdict.rejection_layer == "corpus_integrity"
+
+
+async def test_empty_corpus_rejects_instead_of_vacuous_admission():
+    registry, catalog, config, _ = await _seeded()
+    from drawbore.ratchet import InMemoryRegressionCorpus
+    empty = InMemoryRegressionCorpus()
+    verdict = await admit(
+        config.model_dump(mode="json"),
+        agents=catalog, corpus=empty, sponsor="a.reviewer",
+        baseline_config=config, initial_input=INITIAL, baseline_mocks=MOCKS,
+        derived_at="2026-06-13T01:00:00Z", registry=registry,
+    )
+    assert verdict.admitted is False
+    assert verdict.rejection_layer == "corpus_integrity"
+    assert "vacuous" in (verdict.reason or "")
+
+
+async def test_wider_caller_baseline_cannot_unpin_the_authority_anchor():
+    registry, catalog, config, corpus = await _seeded()
+    # a caller-supplied baseline that differs from the one the corpus pinned
+    forged = config.model_dump(mode="json")
+    forged["pipeline"]["version"] = "9.9.9"
+    from drawbore.config import PipelineConfig
+    verdict = await admit(
+        config.model_dump(mode="json"),
+        agents=catalog, corpus=corpus, sponsor="a.reviewer",
+        baseline_config=PipelineConfig.model_validate(forged),
+        initial_input=INITIAL, baseline_mocks=MOCKS,
+        derived_at="2026-06-13T01:00:00Z", registry=registry,
+    )
+    assert verdict.admitted is False
+    assert verdict.rejection_layer == "corpus_integrity"

@@ -252,7 +252,7 @@ def derive_cases(
                     value="completed",
                     description=(
                         f"a below-threshold confidence from '{spec.name}' must "
-                        f"not complete the run"
+                        f"not complete the run (pinned refusal: {expect.value})"
                     ),
                 ),
                 ContainmentCase(
