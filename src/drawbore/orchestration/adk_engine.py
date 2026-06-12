@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from drawbore.agent import AgentSpec
 from drawbore.llm import LLMError, LLMGateway, LLMRuntime
+from drawbore.llm.config import LLMRuntimeConfig
 from drawbore.observability import genai_span, semconv
 
 from .adk_loop import run_agentic_loop, run_agentic_loop_chain  # noqa: F401 (compat export)
@@ -20,10 +21,41 @@ from .engine import OrchestratorEngine, StepExecution, ToolLoopBundle
 
 
 def _default_model_factory(name: str):
-    # ADK's LiteLLM-backed model. Imported lazily so a non-loop ADKEngine that never
-    # builds a model does not require the import at construction.
+    # Sentinel default for the ``model_factory`` constructor argument. The engine
+    # replaces it at construction with a config-aware factory bound to the runtime's
+    # provider config (see ``_make_default_model_factory``); it is never called
+    # directly. Kept as a plain factory so identity comparison detects the default.
     from google.adk.models.lite_llm import LiteLlm
     return LiteLlm(model=name)
+
+
+def _make_default_model_factory(config: LLMRuntimeConfig) -> Callable[[str], Any]:
+    """Build the loop's default model factory bound to the deployment's provider
+    config. Applies ``base_url``, ``timeout``, and the ``ProviderConfig.extra``
+    pass-through to the LiteLLM-backed model from the SAME per-provider config the
+    one-shot gateway uses, so provider settings (e.g. ``response_format`` json_object)
+    apply uniformly across the one-shot and tool-loop paths. The provider is derived
+    from the resolved provider-prefixed model string, exactly as the one-shot gateway
+    derives it."""
+
+    def factory(name: str) -> Any:
+        # Imported lazily so a non-loop ADKEngine that never builds a model does not
+        # require the import at construction.
+        from google.adk.models.lite_llm import LiteLlm
+
+        provider = name.split("/", 1)[0] if "/" in name else None
+        kwargs: dict[str, Any] = {"model": name}
+        provider_cfg = config.providers.get(provider) if provider else None
+        if provider_cfg is not None:
+            if provider_cfg.base_url is not None:
+                kwargs["base_url"] = provider_cfg.base_url
+            if provider_cfg.timeout_seconds is not None:
+                kwargs["timeout"] = provider_cfg.timeout_seconds
+            for k, v in provider_cfg.extra.items():
+                kwargs.setdefault(k, v)
+        return LiteLlm(**kwargs)
+
+    return factory
 
 
 class ADKEngine(OrchestratorEngine):
@@ -46,7 +78,13 @@ class ADKEngine(OrchestratorEngine):
         if max_llm_calls < 1:
             raise ValueError(f"max_llm_calls must be >= 1, got {max_llm_calls}")
         self._runtime = llm_runtime if llm_runtime is not None else LLMRuntime.from_gateway(gateway)
-        self._model_factory = model_factory
+        # The default factory is bound to the runtime's provider config so the loop
+        # applies base_url/timeout/extra exactly as the one-shot gateway does. A
+        # caller-supplied factory takes over that responsibility and is used as-is.
+        if model_factory is _default_model_factory:
+            self._model_factory = _make_default_model_factory(self._runtime.config)
+        else:
+            self._model_factory = model_factory
         self._max_llm_calls = max_llm_calls
 
     async def run_step(

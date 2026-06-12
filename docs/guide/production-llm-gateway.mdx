@@ -53,6 +53,13 @@ PYTHONPATH=src OPENAI_API_KEY=sk-... python3.11 examples/live_openai_smoke/pipel
 checks, provider-attempt classification, fallback, and the gateway/model-factory both
 the one-shot and the model+tools paths use. There is never a second config object.
 
+**Provider settings apply to every path.** A `ProviderConfig` may set `base_url`,
+`timeout_seconds`, and `extra` (a pass-through for provider parameters Drawbore does
+not model, such as `response_format={"type": "json_object"}` for provider-side JSON
+enforcement). These reach the provider call uniformly: a one-shot model step and a
+model+tools tool-loop step resolve the same per-provider config, so JSON-mode and
+transport settings behave identically on both paths.
+
 **Fallback is governed, not blind.** A profile lists ordered targets and a closed set
 of `fallback_on` reasons (`timeout`, `rate_limit`, `server_error`,
 `provider_unavailable`). Provider exceptions are classified before any fallback

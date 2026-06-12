@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store can reconstruct typed outputs safely. Existing stores need no change.
 
 ### Fixed
+- Provider runtime config now reaches the agentic tool loop. A `ProviderConfig`'s
+  `base_url`, `timeout_seconds`, and `extra` pass-through (for example
+  `response_format={"type": "json_object"}` for provider-side JSON enforcement) were
+  applied on the one-shot model path but dropped on the model+tools tool-loop path,
+  whose model was built from the model name alone. Loop steps now resolve the same
+  per-provider config as one-shot steps, so JSON-mode and transport settings behave
+  identically on both paths. A caller-supplied model factory is still used as-is.
+  Documented in the production LLM gateway guide.
 - A model-backed agent that declares a tool whose ref is not a valid provider
   function name — an MCP tool (`mcp://server/tool`) or the evidence retrieval tool
   (`evidence://retrieve`) — no longer breaks the agentic tool loop on
