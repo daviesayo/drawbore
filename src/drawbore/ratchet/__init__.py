@@ -15,12 +15,16 @@ from .corpus import (
     mocks_fingerprint,
     seal_case,
 )
+from .capability import authority_delta
 from .errors import CorpusIntegrityError, RatchetError
+from .gate import admit
 from .sink import InMemoryRatchetSink, RatchetSink
 from .verdict import RatchetVerdict
 
 __all__ = [
     "CorpusIntegrityError",
+    "admit",
+    "authority_delta",
     "GENESIS",
     "InMemoryRatchetSink",
     "InMemoryRegressionCorpus",
