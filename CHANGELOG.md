@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-12
+
 ### Added
 - `FileCheckpointStore` (from `drawbore.state`): a durable, file-backed
   checkpoint store that persists the full resume contract — step outputs, skip
