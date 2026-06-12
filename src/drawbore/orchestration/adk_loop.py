@@ -165,9 +165,20 @@ async def _run_one_attempt(
     try:
         output = json.loads(final_text)
     except (json.JSONDecodeError, TypeError) as exc:
-        # Surface a bounded excerpt of the offending final content so the failure is
-        # diagnosable from the halt reason / audit. The loop is NOT retried here: a
-        # re-run could replay tool side-effects, which is unsafe. It halts (model_error).
+        # The model cannot be put in JSON-only output mode on the loop's final-answer
+        # turn (structured output and offering tools are mutually exclusive), so a
+        # model that narrates before answering wraps its JSON in prose. Attempt ONE
+        # deterministic recovery: if the content holds EXACTLY ONE top-level JSON
+        # object, extract it. This is a pure parse of content the model ALREADY
+        # produced — it invokes no tool and makes no further model call, so it cannot
+        # replay a tool side-effect (which is why the loop itself is never re-run). It
+        # fails closed when the content holds zero, or more than one (ambiguous),
+        # top-level object — Drawbore never guesses which to trust.
+        recovered = _sole_top_level_json_object(final_text)
+        if recovered is not None:
+            return recovered, len(tool_loop.turns)
+        # Unrecoverable: surface a bounded excerpt of the offending final content so the
+        # failure is diagnosable from the halt reason / audit, then halt (model_error).
         raise LLMError(
             f"agent '{spec.name}' loop returned non-JSON content: {exc} "
             f"(content excerpt: {content_excerpt(final_text)})"
@@ -333,6 +344,65 @@ def _loop_attempt_audit(index, attempt, outcome, *, reason=None) -> ModelAttempt
         provider=attempt.provider, model=attempt.model,
         request_model=attempt.request_model, outcome=outcome, reason=reason,
     )
+
+
+def _sole_top_level_json_object(text: object) -> dict | None:
+    """Deterministically recover a single top-level JSON OBJECT from prose-wrapped
+    final-answer content.
+
+    Returns the object iff EXACTLY ONE balanced top-level ``{...}`` span parses as a
+    JSON object; returns ``None`` (fail closed) when the content is not a string,
+    holds no such object, or holds more than one (ambiguous — there is no safe way to
+    choose which to trust). Pure and bounded: a single left-to-right scan, no tool
+    call, no model call, no side effect, so it is safe to run after tools have
+    executed."""
+    if not isinstance(text, str):
+        return None
+    found: list[dict] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] == "{":
+            end = _matching_brace(text, i)
+            if end != -1:
+                try:
+                    value = json.loads(text[i:end])
+                except ValueError:
+                    value = None
+                if isinstance(value, dict):
+                    found.append(value)
+                    if len(found) > 1:
+                        return None      # ambiguous: more than one top-level object
+                i = end                  # skip the whole span (never descend into nested)
+                continue
+        i += 1
+    return found[0] if len(found) == 1 else None
+
+
+def _matching_brace(s: str, start: int) -> int:
+    """Index just past the ``}`` that balances the ``{`` at ``start``, honouring JSON
+    string literals and escapes so braces inside strings do not miscount; ``-1`` when
+    the brace is unbalanced."""
+    depth = 0
+    in_str = False
+    escaped = False
+    for j in range(start, len(s)):
+        c = s[j]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return -1
 
 
 def _schema_of(registry, ref: str):

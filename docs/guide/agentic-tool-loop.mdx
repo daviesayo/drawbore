@@ -41,7 +41,14 @@ traced and audited. The model never gets to route around a control:
   or `circuit_breaker`).
 - **The loop is bounded** (`max_llm_calls`, default 8) — a runaway loop halts.
 - **Drawbore owns the answer** — the model's final output is parsed and validated
-  against your output model; a non-JSON answer fails closed.
+  against your output model. A model that declares tools cannot be pinned to JSON-only
+  output on its final turn (forcing structured output and offering tools are mutually
+  exclusive), so a model that narrates before answering may wrap its JSON in prose. If
+  the final answer holds exactly one top-level JSON object, Drawbore extracts it
+  deterministically and the step proceeds — a pure re-parse of what the model already
+  said, so no tool is re-invoked. If it holds no JSON object, or more than one
+  (ambiguous), the step fails closed and halts `model_error` with a bounded excerpt of
+  the offending content; Drawbore never guesses which object to trust.
 
 The number of model turns and every tool call are in the audit trail:
 

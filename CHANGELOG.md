@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A model+tools tool-loop step no longer halts `model_error` when the model wraps its
+  final answer in prose. Because a tool-loop step cannot pin the model to JSON-only
+  output on its final turn (provider-side JSON mode and offering tools are mutually
+  exclusive), a model that narrates before answering could fail the loop's strict JSON
+  parse. The loop now deterministically extracts the answer when the final content
+  holds exactly one top-level JSON object — a pure re-parse of what the model already
+  produced, so no tool is re-invoked and no further model call is made. Content with no
+  JSON object, or more than one (ambiguous), still fails closed and halts `model_error`
+  with the bounded excerpt; halt-and-escalate is never weakened. Documented in the
+  agentic tool loop and production LLM gateway guides.
+
 ## [0.4.0] - 2026-06-12
 
 ### Added

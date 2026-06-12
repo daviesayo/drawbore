@@ -78,7 +78,14 @@ toggle. If the retry still returns unusable output the step halts with `model_er
 halt-and-escalate is never weakened. A structural mismatch (a response of the wrong
 shape, or valid JSON that is not an object) is not transient and fails closed
 immediately. A model+tools tool-loop step is not retried this way, because re-running a
-loop could replay tool side effects.
+loop could replay tool side effects. Instead, because a tool-loop step cannot pin the
+model to JSON-only output on its final turn (provider-side JSON mode and offering tools
+are mutually exclusive, so a `response_format` set in `extra` does not constrain the
+loop's tool-selecting turns), the loop recovers a final answer that wraps exactly one
+top-level JSON object in prose by extracting that object deterministically — a pure
+re-parse of what the model already produced, with no tool re-invoked. A final answer
+with no JSON object, or more than one, still halts `model_error` with the bounded
+excerpt.
 
 **Model+tools loops fall back safely.** A model+tools agent resolves through the same
 runtime. Provider failure *before any tool call* may try the next model; once a tool
