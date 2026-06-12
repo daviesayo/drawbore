@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy log, and the audit trail stay keyed on the canonical ref; an alias that maps
   to no declared tool is still refused. Documented in the agentic tool loop guide.
 
+### Documentation
+- The taint-and-trust guide now covers tools called from the agentic tool loop. A
+  model-driven tool call reaches its handler through the same proxy as a deterministic
+  agent's call, so the taint breaker is enforced identically — an exfil-capable call
+  under an untrusted scope halts `taint_violation` whether the call came from your code
+  or from the model mid-completion, and the provider-safe alias the model sees never
+  weakens the breaker. The guide and the agentic tool loop guide also name the refusal
+  shapes by halt code: in the loop, a call to a tool the agent did not declare (or an
+  invented alias) never reaches the proxy and fails closed with `model_error`, whereas a
+  deterministic agent calling a registered-but-undeclared tool directly halts
+  `tool_access` — same fail-closed outcome, different halt code to alert on.
+
 ## [0.3.0] - 2026-06-12
 
 ### Added

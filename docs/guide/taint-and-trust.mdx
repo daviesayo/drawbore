@@ -54,6 +54,25 @@ await pipeline.run(initial, initial_trust=TrustLabel.UNTRUSTED)
 a benign read operation with an outward write, split it into two tools so the read is not
 over-blocked.
 
+**Tools called from the agentic loop.** When a model-backed agent
+[drives a tool loop](/guide/agentic-tool-loop), every tool the model calls reaches its
+handler through the same proxy as a deterministic agent's call — so the taint breaker is
+enforced identically. Invoking an untrusted-source tool taints the step, and an
+`exfil_capable` call under an untrusted scope halts `taint_violation`, whether the call came
+from your code or from the model mid-completion. The model sees each tool under a
+provider-safe alias, but trust scope, the sink-gate, the one-time token, and the audit trail
+all stay keyed on the canonical ref, so the alias never weakens the breaker.
+
+One refusal *shape* differs by path, and it changes which halt code an operator alerts on. In
+the loop the model is only ever offered the agent's *declared* tools. A call the model makes
+to anything else — a registered-but-undeclared tool, or an invented alias that maps to no
+declared tool — never reaches the proxy, so it cannot raise a proxy scope denial; it fails
+closed at the model boundary and halts `model_error`. A deterministic agent that calls a
+registered-but-undeclared tool directly still halts `tool_access`. Same fail-closed outcome,
+different halt code: alert on both `taint_violation` and `model_error` for the loop path, and
+`tool_access` for the direct path. See [Branching on a halt](/guide/reliability#branching-on-a-halt)
+for the full halt-code vocabulary.
+
 **Honest scope.** Taint is whole-object (no field-level declassification yet). The guarantee
 assumes tool calls within a step run one at a time (which is how the runtime executes them),
 so the taint from one call is always visible to the next. Retrieving an untrusted-origin
