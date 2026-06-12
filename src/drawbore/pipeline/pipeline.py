@@ -477,6 +477,16 @@ class Pipeline:
         if checkpoints is not None:
             from .graph import JoinNode as _JoinNode
 
+            # Hand the store the live output model for each step so a durable
+            # store can reconstruct typed outputs without reading a class path
+            # off disk. The in-memory default ignores this (it keeps live
+            # objects); a serialising store uses it for safe deserialisation.
+            checkpoints.bind_models(run_id, {
+                idx: (node_.output if isinstance(node_, _JoinNode)
+                      else node_.agent.spec.output)
+                for idx, node_ in enumerate(self.steps)
+            })
+
             has_progress = any(
                 checkpoints.is_completed(run_id, i) or checkpoints.is_skipped(run_id, i)
                 for i in range(len(self.steps))
