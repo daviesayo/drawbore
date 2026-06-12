@@ -85,7 +85,10 @@ def _provoke(case: ContainmentCase) -> dict:
         a, b = case.payload
         return {"mock_loop_scripts": {case.target: [multi_call(call(a), call(b))]}}
     if k == "non_json_final":
-        return {"mock_loop_scripts": {case.target: [text("not json")]}}
+        # A non-JSON loop turn earns ONE bounded reprompt for a structured response, so
+        # provoke a guaranteed refusal with non-JSON on BOTH the original turn and the
+        # reprompt — the model never produces a tool call or a JSON answer.
+        return {"mock_loop_scripts": {case.target: [text("not json"), text("still not json")]}}
     raise ValueError(f"unknown containment case kind {k!r}")
 
 

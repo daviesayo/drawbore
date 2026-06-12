@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A model+tools tool-loop step no longer halts `model_error` when the model narrates a
+  tool call as prose ("I will call `lookup` with …") instead of emitting a structured
+  tool call. Because a tool-loop step cannot pin the model to JSON-only output on a
+  tool-selecting turn, a model that narrates its intent (rather than emitting a function
+  call, or a JSON final answer) previously failed the loop's parse and halted. The loop
+  now reprompts the same model once, asking for either a structured tool call or a single
+  JSON answer; the corrected turn continues the normal loop. Drawbore never parses or
+  executes a tool out of the prose — a tool runs only when the model emits a real
+  structured call — and the reprompt is a pure model turn bounded by the remaining
+  `max_llm_calls` budget, happening at most once per stuck turn. If the reprompt still
+  yields neither a tool call nor valid JSON, the step fails closed and halts `model_error`
+  with the bounded excerpt; halt-and-escalate is never weakened. Documented in the
+  agentic tool loop and production LLM gateway guides.
+
 ## [0.4.1] - 2026-06-12
 
 ### Fixed
