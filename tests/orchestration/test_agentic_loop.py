@@ -90,3 +90,70 @@ async def test_loop_non_json_final_error_includes_bounded_excerpt(fake_adk_model
     assert "content excerpt" in msg
     assert "<not json>" in msg
     assert len(msg) < 1000                   # bounded: the 5000-char body is not dumped
+
+
+async def test_loop_recovers_prose_wrapped_json_final_answer(fake_adk_model):
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # A real-world failure mode: the model narrates before answering, so its FINAL
+    # turn is a single JSON object wrapped in prose. Drawbore deterministically
+    # recovers the sole top-level JSON object and the step COMPLETES.
+    prose = (
+        "Sure! The user wants the answer. Here is the result:\n"
+        + json.dumps({"answer": "done:42"})
+        + "\nLet me know if you need anything else."
+    )
+    script = [("call", "lookup", {"key": "x"}), ("text", prose)]
+    reg, proxy, bundle = _wiring()
+    output, model_turns = await run_agentic_loop(
+        solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+    )
+    assert output == {"answer": "done:42"}
+    # NO side-effect replay during recovery: the tool ran exactly once (recovery is a
+    # pure parse — it invokes no tool and makes no further model call).
+    assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
+    assert model_turns == 2                  # the recovery makes no extra model turn
+
+
+async def test_loop_unrecoverable_prose_still_halts_model_error(fake_adk_model):
+    from drawbore.llm import LLMError
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # Pure narration with no JSON object at all: nothing to recover -> fail closed.
+    script = [("call", "lookup", {"key": "x"}),
+              ("text", "The user wants this. I need to: 1. Call the tool. 2. Answer.")]
+    reg, proxy, bundle = _wiring()
+    with pytest.raises(LLMError) as ei:
+        await run_agentic_loop(
+            solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+        )
+    assert "content excerpt" in str(ei.value)
+    # The tool ran once (the loop turn), and recovery added nothing.
+    assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
+
+
+async def test_loop_ambiguous_multiple_json_objects_fails_closed(fake_adk_model):
+    from drawbore.llm import LLMError
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # Two top-level JSON objects in the prose: Drawbore never guesses which to trust,
+    # so it fails closed rather than picking one.
+    prose = 'First {"answer": "a"} and then also {"answer": "b"}.'
+    script = [("text", prose)]
+    reg, proxy, bundle = _wiring()
+    with pytest.raises(LLMError) as ei:
+        await run_agentic_loop(
+            solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+        )
+    assert "content excerpt" in str(ei.value)
