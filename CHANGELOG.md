@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Pipeline.on_failure` — a read-only property exposing the failure-escalation
+  policy the pipeline was configured with, or `None` when failures halt without
+  dispatch.
+
 ## [0.5.0] - 2026-06-12
 
 ### Added
