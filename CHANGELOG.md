@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Safety gauntlet runners (`run_containment`, `assert_contained`, `run_pack`)
+  now accept `llm_config=` and `credential_checker=` and forward them to
+  `test_mode`, so the shipped containment corpus works on pipelines whose
+  agents bind a model by profile (`model="profile:..."`). Without them a
+  profile-bound pipeline halted `model_config_error` before the attack was
+  provoked. As in all of test mode, the profile resolves against the credential
+  checker and no provider is called.
 - `register_mcp_server` now accepts optional per-tool `source_trust` and
   `exfil_capable` maps (keyed by tool name), so an outward-writing MCP tool — a
   notifier, an email relay — can be declared exfil-capable through the public MCP
@@ -16,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-safe default (untrusted-source, not a sink); a flag keyed to a tool not in
   `allowed_tools` raises `ValueError`. Documented in the MCP tools and taint-and-trust
   guides.
+
+### Fixed
+- The LLM gateway now silences the underlying provider SDK's unsolicited debug
+  printing (e.g. the repeated "Provider List" pointer it writes to stdout around
+  failing model attempts), so run output stays clean. Callers no longer need to
+  import the provider SDK and set its debug flag themselves. This affects only
+  the provider SDK's own debug prints; no safety, audit, or observability signal
+  is suppressed.
 
 ## [0.2.0] - 2026-06-11
 
