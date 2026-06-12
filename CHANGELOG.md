@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `evidence://retrieve` is now auto-bound when `evidence_store=store` is passed
+  to `Pipeline.run` (or `test_mode`). Previously, declaring `EVIDENCE_TOOL_REF`
+  in an agent's `tools=` required a separate `register_evidence_tool(registry,
+  store=store)` call at composition time; forgetting it caused a silent "tool not
+  found" failure. Now a single `evidence_store=store` argument is the only wiring
+  point needed — it covers both compression storage and retrieval binding through
+  the same store instance. The two-call workaround continues to work.
+
 ## [0.6.0] - 2026-06-13
 
 ### Added

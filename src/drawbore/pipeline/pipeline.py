@@ -16,8 +16,10 @@ from drawbore.agent import Agent
 from drawbore.audit import AuditRecord, AuditRecorder, AuditSink, RunMetrics
 from drawbore.context import build_input, sanitize
 from drawbore.evidence import (
+    EVIDENCE_TOOL_REF,
     EvidencePolicy,
     EvidenceStore,
+    register_evidence_tool,
 )
 from drawbore.observability import payload_hash
 from drawbore.errors import SanitizationError
@@ -29,6 +31,7 @@ from drawbore.orchestration import LocalEngine, OrchestratorEngine
 from drawbore.tools import (
     ToolAccessError,
     ToolProxy,
+    ToolRegistry,
     TokenIssuer,
     registry as default_registry,
 )
@@ -139,6 +142,12 @@ class Pipeline:
         self._static_check(agent, inputs)
         self._static_check_when(agent, when)
         for tool_ref in agent.spec.tools:
+            if tool_ref == EVIDENCE_TOOL_REF:
+                # The evidence retrieval tool is auto-bound at run time when
+                # evidence_store is provided to Pipeline.run; skip the
+                # registration-time check so the caller's single evidence_store=
+                # argument is the only wiring point needed.
+                continue
             if not self._registry.has(tool_ref):
                 raise ToolAccessError(
                     f"{agent.name}: declared tool '{tool_ref}' is not registered"
@@ -469,6 +478,21 @@ class Pipeline:
         # the whole run sees — it must feed both the ToolProxy and the ToolLoopBundle,
         # or mocked handlers/operations/loop tool schemas diverge.
         registry = registry_override if registry_override is not None else self._registry
+        # Auto-bind the evidence retrieval handler when a run-time store is provided
+        # and the tool is declared by at least one step but has no handler in the
+        # run registry yet.  A per-run overlay is built to avoid mutating the shared
+        # pipeline registry across runs.
+        if evidence_store is not None and not registry.has(EVIDENCE_TOOL_REF):
+            from .graph import JoinNode as _JN
+            if any(
+                EVIDENCE_TOOL_REF in s.agent.spec.tools
+                for s in self.steps
+                if not isinstance(s, _JN)
+            ):
+                _overlay = ToolRegistry()
+                _overlay._tools.update(registry._tools)
+                register_evidence_tool(_overlay, store=evidence_store)
+                registry = _overlay
         # Join indices whose ledger `restored_join` entry was emitted during
         # pre-flight (in index order). The in-loop restore short-circuit must not
         # log them a second time.

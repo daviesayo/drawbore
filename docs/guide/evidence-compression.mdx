@@ -43,18 +43,31 @@ rolling the feature out safely.
 
 ## Retrieve the original, safely
 
-The original is never lost. An agent that declares the evidence tool can retrieve
-it through the proxy — scoped by a one-time token, gated by policy:
+The original is never lost. An agent that declares the evidence retrieval tool
+can retrieve it through the proxy — scoped by a one-time token, gated by policy.
+
+**Single wiring point.** Declare `EVIDENCE_TOOL_REF` in the agent's `tools=` and
+pass `evidence_store=store` to `Pipeline.run` (or `test_mode`). That one argument
+wires up both compression storage and retrieval — no separate
+`register_evidence_tool` call needed:
 
 ```python
-from drawbore.evidence import register_evidence_tool, EVIDENCE_TOOL_REF
+from drawbore.evidence import EVIDENCE_TOOL_REF, EvidencePolicy, InMemoryEvidenceStore
 
-register_evidence_tool(registry, store=store)
+store = InMemoryEvidenceStore()
 
 @agent(input=Transactions, output=Verdict, model="m", tools=[EVIDENCE_TOOL_REF])
-async def screen(event, tools):
+async def screen(v, tools):
     hits = await tools.call(EVIDENCE_TOOL_REF, {"handle_id": h, "mode": "search", "query": "high_risk"})
+
+p = Pipeline(name="aml")
+p.add(screen, evidence=EvidencePolicy(name="aml", enabled=True, min_tokens=800))
+
+result = await p.run(transactions, engine=engine, evidence_store=store)
 ```
+
+The retrieval handler is bound to the exact same store used for compression, so
+every handle your pipeline creates is immediately retrievable.
 
 A handle appearing in context is **not** permission to retrieve — the proxy is
 authoritative. By default a policy allows scoped *search* of the original and
