@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-12
+
 ### Added
 - Safety gauntlet runners (`run_containment`, `assert_contained`, `run_pack`)
   now accept `llm_config=` and `credential_checker=` and forward them to
