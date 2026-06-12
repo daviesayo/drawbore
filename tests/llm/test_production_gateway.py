@@ -27,6 +27,23 @@ class _FakeAcompletion:
         return self.result
 
 
+class _ScriptedAcompletion:
+    """Returns a per-call scripted response (or raises a per-call exception). After
+    the script is exhausted it keeps returning the last item, so a 1-element script
+    means 'the same response on every call'."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        item = self.results[min(len(self.calls) - 1, len(self.results) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
 def _resp(content):
     return {"choices": [{"message": {"content": content}}]}
 
@@ -74,6 +91,38 @@ async def test_null_content_is_a_contract_error(monkeypatch):
     gw = ProductionLLMGateway(config=LLMRuntimeConfig())
     with pytest.raises(LLMError, match="null content"):
         await gw.complete(_req("gpt-4o"))
+
+
+async def test_non_json_error_includes_bounded_content_excerpt(monkeypatch):
+    junk = "<html>oops " + "X" * 9000 + "</html>"
+    fake = _ScriptedAcompletion([_resp(junk)])
+    monkeypatch.setattr("drawbore.llm.production.litellm.acompletion", fake)
+    gw = ProductionLLMGateway(config=LLMRuntimeConfig())
+    with pytest.raises(LLMError) as ei:
+        await gw.complete(_req("gpt-4o"))
+    msg = str(ei.value)
+    assert "content excerpt" in msg
+    assert "<html>oops" in msg
+    assert len(msg) < 1000                   # bounded: the 9000-char body is not dumped
+
+
+async def test_retries_once_on_contract_violation_then_succeeds(monkeypatch):
+    fake = _ScriptedAcompletion([_resp(""), _resp(json.dumps({"y": 1}))])
+    monkeypatch.setattr("drawbore.llm.production.litellm.acompletion", fake)
+    gw = ProductionLLMGateway(config=LLMRuntimeConfig())
+    resp = await gw.complete(_req("gpt-4o"))
+    assert resp.output == {"y": 1}
+    assert len(fake.calls) == 2              # one transient empty, then one retry that succeeded
+
+
+async def test_second_contract_violation_fails_closed(monkeypatch):
+    fake = _ScriptedAcompletion([_resp("nope"), _resp("still nope")])
+    monkeypatch.setattr("drawbore.llm.production.litellm.acompletion", fake)
+    gw = ProductionLLMGateway(config=LLMRuntimeConfig())
+    with pytest.raises(LLMError) as ei:
+        await gw.complete(_req("gpt-4o"))
+    assert len(fake.calls) == 2              # exactly one retry, then halt — fail-closed preserved
+    assert "content excerpt" in str(ei.value)
 
 
 async def test_empty_model_chain_fails_closed_as_config_error():

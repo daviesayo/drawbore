@@ -43,6 +43,7 @@ from drawbore.llm import (
     ModelAudit,
     ModelUnavailableError,
     build_model_request,
+    content_excerpt,
     resolve_model_chain,
 )
 from drawbore.llm.classify import classify_provider_exception
@@ -164,7 +165,13 @@ async def _run_one_attempt(
     try:
         output = json.loads(final_text)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise LLMError(f"agent '{spec.name}' loop returned non-JSON content: {exc}") from exc
+        # Surface a bounded excerpt of the offending final content so the failure is
+        # diagnosable from the halt reason / audit. The loop is NOT retried here: a
+        # re-run could replay tool side-effects, which is unsafe. It halts (model_error).
+        raise LLMError(
+            f"agent '{spec.name}' loop returned non-JSON content: {exc} "
+            f"(content excerpt: {content_excerpt(final_text)})"
+        ) from exc
     if not isinstance(output, dict):
         raise LLMError(
             f"agent '{spec.name}' loop returned JSON that is not an object: {type(output).__name__}"
