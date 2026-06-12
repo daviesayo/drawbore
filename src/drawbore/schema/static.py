@@ -8,7 +8,7 @@ evidence elsewhere.
 
 from __future__ import annotations
 
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -28,6 +28,42 @@ def _strip_optional(annotation: Any) -> Any:
 
 def _is_model(annotation: Any) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
+def _is_literal(annotation: Any) -> bool:
+    return get_origin(annotation) is Literal
+
+
+def _value_eq(a: Any, b: Any) -> bool:
+    """Strict value equality for literal members — same concrete type and equal.
+
+    Avoids cross-type conflation (e.g. ``1 == True``) so a literal subset check
+    never silently widens authority.
+    """
+    return type(a) is type(b) and a == b
+
+
+def _literal_assignable(source: Any, target: Any) -> bool:
+    """A ``Literal[...]`` source narrows a value; it is assignable to ``target``
+    only when every literal value genuinely satisfies ``target`` (covariant
+    reads). Two cases are safe:
+
+    - ``target`` is a plain class ``T``: every literal value must be an instance
+      of ``T`` (``Literal['USD','EUR'] -> str``, ``Literal[1,2] -> int``);
+    - ``target`` is itself a ``Literal``: the source values must be a subset of
+      the target values (``Literal['USD'] -> Literal['USD','EUR']``).
+
+    Anything else fails closed.
+    """
+    source_values = get_args(source)
+    if _is_literal(target):
+        target_values = get_args(target)
+        return all(
+            any(_value_eq(v, tv) for tv in target_values) for v in source_values
+        )
+    if isinstance(target, type):
+        return all(isinstance(v, target) for v in source_values)
+    return False
 
 
 def _model_assignable(source: type, target: type) -> bool:
@@ -56,6 +92,10 @@ def is_assignable(source: Any, target: Any) -> bool:
       not satisfy a non-optional ``T``;
     - two Pydantic models compare structurally (every required target field is
       present in the source with an assignable type; extra source fields ignored);
+    - a ``Literal[...]`` source is assignable to its values' base type (e.g.
+      ``Literal['USD','EUR'] -> str``), or to a ``Literal`` superset, but a wider
+      type is never assignable to a ``Literal`` target (a plain ``str`` is not
+      guaranteed to be one of the literals);
     - for other plain classes, ``source`` is assignable to ``target`` when
       ``issubclass(source, target)``.
     """
@@ -68,6 +108,8 @@ def is_assignable(source: Any, target: Any) -> bool:
         return is_assignable(inner_source, _strip_optional(target))
     if _is_optional(source):
         return False
+    if _is_literal(source):
+        return _literal_assignable(source, target)
     if _is_model(source) and _is_model(target):
         return _model_assignable(source, target)
     if isinstance(source, type) and isinstance(target, type):

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The registration-time static compatibility check now accepts a narrowed `Literal[...]`
+  output bound to its wider base-type input. An upstream field typed
+  `Literal["USD", "EUR", "GBP"]` binds to a downstream `str` input (and likewise an `int`
+  literal to an `int` input), since the literal value is always a valid instance of the
+  base type — downstream consumers no longer have to repeat the exact literal set.
+  The check stays directional and fails closed in the unsafe directions: a wider output
+  (e.g. plain `str`) bound to a `Literal[...]` input is still rejected, a `Literal` whose
+  values are not all instances of the input type is still rejected, and a `Literal`
+  superset bound to a `Literal` subset input is still rejected. Documented in the
+  pipelines guide.
 - A model+tools tool-loop step no longer halts `model_error` when the model narrates a
   tool call as prose ("I will call `lookup` with …") instead of emitting a structured
   tool call. Because a tool-loop step cannot pin the model to JSON-only output on a

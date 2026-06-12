@@ -76,6 +76,13 @@ typed field in a routing step and gate on it. Join policies: `exactly_one`,
 
 - **Static check** (when you build the pipeline): every binding's source type
   must match the target type, or the pipeline is rejected before it runs.
+  Compatibility is **directional** and only widens in the safe direction. A
+  narrowed output satisfies a wider input: an upstream field typed
+  `Literal["USD", "EUR", "GBP"]` binds to a downstream field typed `str` (the
+  literal value is always a valid `str`), so consumers need not repeat the exact
+  literal set. The reverse is refused: a `str` output bound to a
+  `Literal["USD", "EUR", "GBP"]` input is rejected, because a plain `str` is not
+  guaranteed to be one of the allowed values.
 - **Runtime check** (at every step): inputs and outputs are validated; on any
   mismatch the run **halts** and reports exactly which step failed and why —
   it does not continue with bad data.
