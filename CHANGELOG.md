@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `FileCheckpointStore` (from `drawbore.state`): a durable, file-backed
+  checkpoint store that persists the full resume contract — step outputs, skip
+  marks, the topology fingerprint, per-step seals, and trust labels — to a
+  directory. A fresh instance over the same directory resumes a run across a
+  process restart, restoring completed steps without re-execution and without a
+  spurious `resume_drift`, while a genuine contract change still refuses. Each
+  step is written atomically (temp file then rename), so a crash mid-write never
+  tears a committed checkpoint. Outputs are stored as plain field data and
+  reconstructed from the live pipeline's output schema, never from a class path
+  read off disk, so a tampered checkpoint cannot trigger an arbitrary import.
+  Stdlib only. Documented in the durable-resume guide.
+
+### Changed
+- `CheckpointStore` gains an optional `bind_models` hook (default no-op). The
+  pipeline supplies each step's live output model at run start so a serialising
+  store can reconstruct typed outputs safely. Existing stores need no change.
+
 ## [0.3.0] - 2026-06-12
 
 ### Added
