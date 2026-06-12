@@ -34,7 +34,8 @@
           "docs/guide/production-llm-gateway",
           "docs/guide/taint-and-trust",
           "docs/guide/safety-gauntlet",
-          "docs/guide/authority-regression"
+          "docs/guide/authority-regression",
+          "docs/guide/safety-ratchet"
         ]
       },
       {

@@ -95,6 +95,12 @@ class Pipeline:
         self._dispatcher = dispatcher or RecordingDispatcher()
         self._confidence_threshold = confidence_threshold
 
+    @property
+    def on_failure(self) -> "EscalationPolicy | None":
+        """The failure-escalation policy this pipeline halts-and-escalates with,
+        or ``None`` when a failure halts without dispatch."""
+        return self._on_failure
+
     def add(
         self,
         agent: Agent,

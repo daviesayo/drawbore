@@ -1,0 +1,153 @@
+---
+title: Safety ratchet
+description: Admit machine-proposed pipeline changes only when no known safety property regresses.
+---
+
+# Safety ratchet
+
+**When to use this:** you let an LLM optimizer (or any untrusted process) propose
+pipeline-manifest JSON and you want admission to be mechanical: fail-closed manifest
+resolution, no silent authority widening, and replay of frozen safety properties through
+the real safety layer. `admit()` is the only sanctioned path from a candidate manifest to
+a blessed `Pipeline`; nothing a manifest can express reaches or edits the verifier.
+
+```python
+import asyncio
+
+from drawbore.config import AgentCatalog, to_config
+from drawbore.ratchet import (
+    InMemoryRatchetSink, InMemoryRegressionCorpus, admit, derive_cases,
+)
+
+# 1. Observe the baseline: run your pipeline once in test mode and keep the
+#    serializable mock subset you used (tools + one-shot model responses).
+config = to_config(pipeline, agents=catalog)
+async with pipeline.test_mode(**full_mocks) as tp:
+    baseline = await tp.run(initial)
+
+# 2. Seed the corpus mechanically — cases are derived, never hand-written.
+corpus = InMemoryRegressionCorpus()
+for case in derive_cases(config, pipeline, baseline, initial=initial,
+                         baseline_mocks=serializable_mocks,
+                         derived_at="2026-06-13T00:00:00Z", predecessor=None):
+    corpus.append(case, sponsor="a.reviewer")
+
+# 3. Gate every proposed manifest.
+verdict = await admit(candidate_json, agents=catalog, corpus=corpus,
+                      sponsor="a.reviewer", baseline_config=config,
+                      initial_input=initial, baseline_mocks=serializable_mocks,
+                      derived_at="2026-06-13T01:00:00Z", registry=registry,
+                      sink=InMemoryRatchetSink())
+if verdict.admitted:
+    active_pipeline = verdict.pipeline   # adoption = replacing your reference
+else:
+    print(verdict.legible())             # which layer refused, and why
+```
+
+## The four layers
+
+### Corpus integrity
+
+Before any replay, `admit()` verifies the chain of `RegressionCase` objects from the
+genesis entry to the head. Each case carries the SHA-256 of its predecessor, so a
+tampered or out-of-order corpus fails closed with `CorpusIntegrityError` before a single
+candidate manifest is touched. The replay inputs (tool responses and one-shot model
+answers) are pinned at derivation time via `mocks_fingerprint` — so the baseline
+behavior a case asserts is the behavior that was _observed_, not behavior someone typed
+in afterward. Hand-authored cases are the poisoning vector this exists to block; see
+Common mistakes below.
+
+### Fail-closed manifest resolution
+
+The candidate JSON is resolved through the same `from_config` path that governs
+production pipelines: schema drift, duplicate agent names, undeclared bindings, and
+unknown symbolic refs all fail closed before the safety layer is exercised. A candidate
+that cannot be fully resolved is rejected immediately; there is no partial admission.
+
+### Authority monotonicity
+
+Before replay, `admit()` computes the effective authority of the candidate manifest
+relative to the baseline (using the same capability-footprint diff that backs
+[authority regression checks](/docs/guide/authority-regression)). A narrowing — fewer
+tools, tighter evidence grants — is fine and passes through. A **widening** — a new tool
+on any agent, or a new evidence scope — is returned to the caller as a held-for-human-review
+verdict: `verdict.admitted` is `False`, `verdict.authority_diff` carries the diff, and
+`verdict.legible()` renders it for a reviewer. A widening is never auto-admitted; it is
+a signal for a human decision, not an error in the candidate.
+
+### Corpus replay
+
+For an admitted manifest, `admit()` replays every frozen regression case through the
+candidate pipeline in test mode. The _real_ Drawbore safety layer decides each outcome —
+schema enforcement, context isolation, the JIT token proxy, halt-and-escalate — not the
+ratchet itself. A case that was refused at baseline must still be refused by the
+candidate; a case that was admitted must still admit. Any change in verdict halts
+admission and the failing case is identified in `verdict.legible()`.
+
+On a successful admission, the corpus grows opportunistically with cases derived from the
+candidate run — but because replay inputs are pinned to the baseline mocks, this is
+usually a no-op (the candidate's new cases are identical to the baseline's). Growth is
+never a gate; re-seed with `derive_cases` under a named sponsor when you want the corpus
+to grow deliberately.
+
+## What this does and does not prove
+
+The safety ratchet is a never-lose-a-known-property gate, not a soundness proof. It
+catches regressions in behavior the corpus has already observed; it cannot catch regressions
+in behavior that no case exercises. Named gaps in this first cut:
+
+- **Corpus coverage grows only with observed behavior.** A proposed change that alters
+  behavior in a path no existing case exercises passes the gate. Re-seed the corpus after
+  each meaningful pipeline change.
+- **First-cut derivation covers one-shot model steps.** Cases are derived from the
+  baseline run; the first-cut implementation covers deterministic and one-shot model
+  steps ahead of model+tools steps. A model+tools step whose loop behavior differs in
+  the candidate will not be caught until corpus coverage is extended to that path.
+- **An input-schema widening no case exercises passes the gate.** If the baseline corpus
+  was seeded with a narrow input, a candidate that accepts — but mishandles — a wider
+  input will not be caught.
+- **The sponsor on `corpus.append` is attribution, not cryptographic custody.** The
+  hash chain is the tamper-evidence mechanism; the sponsor field records who authorized
+  the append for audit purposes, but it is not a signature.
+- **On-admission corpus growth is best-effort.** Because replay inputs are pinned to
+  baseline mocks, a new case derived from an admitted candidate usually has the same
+  mocks as the baseline case and will deduplicate. This is intentional: growth is
+  opportunistic, never a gate.
+
+For a stronger-but-narrower formal alternative that proves safety properties by
+construction rather than by observation, see
+[SEVerA](https://arxiv.org/abs/2603.25111) (arXiv 2603.25111).
+
+## Common mistakes
+
+**Hand-authoring regression cases.** `derive_cases` is the only sanctioned path. Cases
+produced by derivation carry a pinned `mocks_fingerprint` that ties them to observed
+behavior; author-supplied cases with hand-typed expected outputs are the poisoning
+vector this exists to block. If `derive_cases` does not cover a scenario you care about,
+extend the baseline run to exercise it, then re-derive.
+
+**Passing the full loop-script bundle to `derive_cases`.** The `baseline_mocks`
+argument accepts only the serializable subset of your mocks — tool call responses and
+one-shot model answers. A `model_factory` loop-script (the scripted turn sequence for a
+model+tools agent) is not serializable and must not be included; pass only the JSON-safe
+dict that `test_mode` would accept for deterministic and one-shot steps.
+
+**Treating an authority widening as an error.** A widening verdict means a human needs to
+decide, not that the candidate is broken. Read `verdict.authority_diff` for the exact diff (its `certificate()` renders it for review),
+decide whether the new authority is intentional, and if so re-baseline with the widened
+manifest as the new reference. Do not patch around it by removing tools from the
+candidate to pass the gate.
+
+**Expecting `corpus_root_after` to advance on every admit.** Because the replay runs
+with pinned baseline mocks, the derived cases usually duplicate the existing corpus head.
+`corpus_root_after` advances only when the candidate run produces a genuinely new case —
+which is rare by design. If you need the corpus to grow, call `derive_cases` explicitly
+after a reviewed baseline run and `corpus.append` the new cases under a named sponsor.
+
+## See also
+
+- [Safety gauntlet](/docs/guide/safety-gauntlet) — the replay engine that runs each case
+- [Authority regression checks](/docs/guide/authority-regression) — the authority diff
+  backing the widening check
+- [JSON config](/docs/guide/json-config) — the manifest format `admit()` resolves
+- [Local testing](/docs/guide/local-testing) — `test_mode`, the real-safety-layer harness
