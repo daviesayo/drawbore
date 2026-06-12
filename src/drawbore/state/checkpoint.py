@@ -12,6 +12,7 @@ interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Mapping
 
 from pydantic import BaseModel
 
@@ -77,6 +78,21 @@ class CheckpointStore(ABC):
         therefore hard-refuses resumes of completed work — safe, never
         replay-unverified. Durable stores MUST override both ``record_seal``
         and ``seal_of`` together.
+        """
+        return None
+
+    def bind_models(
+        self, run_id: str, models: Mapping[int, type[BaseModel]]
+    ) -> None:
+        """Supply the live output model for each step index, keyed by step.
+
+        Default no-op. A store that keeps live objects (the in-memory default)
+        needs nothing here. A durable store that serialises outputs to bytes
+        uses these models to reconstruct typed outputs in ``output_of`` — the
+        models come from the live pipeline being run, never from a class path
+        read off disk, so deserialisation can never import a caller-controlled
+        type. The pipeline calls this once at the start of a run that supplies a
+        store, before any ``output_of``.
         """
         return None
 

@@ -29,6 +29,37 @@ step also records a **seal** — a snapshot of the agent's declared contract
 (version, risk tier, tools, model, fallback model, instructions, input/output
 schemas, approval requirement, and the step's evidence policy).
 
+## Resuming across a process restart
+
+`InMemoryCheckpointStore` lives only for the lifetime of the process, so it
+resumes within one run of your program. To resume after the process exits — a
+worker that crashes and restarts, a job picked up by a different machine — use
+`FileCheckpointStore`, which persists the full checkpoint (outputs, skip marks,
+topology fingerprint, seals, and trust labels) to a directory:
+
+```python
+from drawbore.state import FileCheckpointStore
+
+# First process: runs until it halts, persisting each completed step.
+store = FileCheckpointStore("/var/lib/myapp/checkpoints")
+first = await pipeline.run(order, run_id="order-A-1", checkpoints=store)
+
+# A later process (a restart): a brand-new store over the same directory
+# restores the completed steps and resumes — no re-execution, no spurious drift.
+store = FileCheckpointStore("/var/lib/myapp/checkpoints")
+again = await pipeline.run(order, run_id="order-A-1", checkpoints=store)
+```
+
+Each step is written atomically (write a temp file, then rename), so a crash
+mid-write never leaves a torn checkpoint: the previous committed step stays
+intact and a half-written file is ignored on the next read.
+
+Outputs are stored as plain field data, not a Python class path. On resume the
+store rebuilds each typed output from the *live* pipeline's output schema for
+that step, so a tampered checkpoint file can never make the store import an
+arbitrary type. (This is why the same pipeline, with matching declarations,
+must be rebuilt before you resume — exactly what the seal also verifies.)
+
 ## When resume says no
 
 On resume, every stored seal is re-verified against the live pipeline before
@@ -76,7 +107,8 @@ Two more boundaries to know:
 - **Concurrent resumes are not serialized.** Two workers resuming the same
   `run_id` at the same time both pass verification and both execute. The seal
   refuses drifted resumes; it does not make execution single-use.
-- **Custom checkpoint stores must persist seals.** A store that implements the
+- **Custom checkpoint stores must persist seals.** `FileCheckpointStore`
+  already does; if you write your own store, a store that implements only the
   older interface restores outputs but returns no seals, and an unverifiable
   step refuses the resume with `resume_drift` until the store implements
   `record_seal`/`seal_of`. Implement both together, and persist a step's
