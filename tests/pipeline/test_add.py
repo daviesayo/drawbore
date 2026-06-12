@@ -100,3 +100,54 @@ def test_binding_to_unknown_source_field_raises():
     # 'a' is in the pipeline but its output (ADoubled) has no field 'ghostfield'
     with pytest.raises(SchemaCompatibilityError):
         p.add(of, inputs={"doubled": From("a.ghostfield")})
+
+
+def test_literal_output_binds_to_wider_str_input():
+    from typing import Literal
+
+    class CurrencyOut(BaseModel):
+        currency: Literal["USD", "EUR", "GBP"]
+
+    class NeedsCurrencyStr(BaseModel):
+        currency: str
+
+    @agent(name="currency_source", input=Seed, output=CurrencyOut)
+    async def currency_source(value: Seed) -> CurrencyOut:
+        return CurrencyOut(currency="USD")
+
+    @agent(name="currency_consumer", input=NeedsCurrencyStr, output=NeedsCurrencyStr)
+    async def currency_consumer(value: NeedsCurrencyStr) -> NeedsCurrencyStr:
+        return value
+
+    p = Pipeline(name="t")
+    p.add(currency_source)
+    # Literal['USD','EUR','GBP'] output binds to a plain str input (safe narrowing).
+    p.add(currency_consumer, inputs={"currency": From("currency_source.currency")})
+    assert [s.agent.name for s in p.steps] == [
+        "currency_source",
+        "currency_consumer",
+    ]
+
+
+def test_str_output_into_literal_input_still_rejected():
+    from typing import Literal
+
+    class StrOut(BaseModel):
+        currency: str
+
+    class NeedsLiteral(BaseModel):
+        currency: Literal["USD", "EUR", "GBP"]
+
+    @agent(name="str_source", input=Seed, output=StrOut)
+    async def str_source(value: Seed) -> StrOut:
+        return StrOut(currency="USD")
+
+    @agent(name="literal_consumer", input=NeedsLiteral, output=NeedsLiteral)
+    async def literal_consumer(value: NeedsLiteral) -> NeedsLiteral:
+        return value
+
+    p = Pipeline(name="t")
+    p.add(str_source)
+    # A plain str is not guaranteed to be one of the literals: must stay refused.
+    with pytest.raises(SchemaCompatibilityError):
+        p.add(literal_consumer, inputs={"currency": From("str_source.currency")})
