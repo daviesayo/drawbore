@@ -96,14 +96,30 @@ pipeline, Drawbore marks it untrusted and refuses to pass it to any tool you dec
 `exfil_capable` — an HTTP write, an outward send, an email relay. This default is the
 data-exfiltration barrier.
 
-If you trust a specific server's data — a read-only internal knowledge base, a company
-index — override per tool:
+An MCP server is the most likely place an outward-writing tool comes from — a notifier, a
+message sender, an email relay. Declare those facts on `register_mcp_server` itself, per
+tool, so an MCP tool participates in the taint gate with the same honesty a custom tool
+gets. `exfil_capable` and `source_trust` are maps keyed by tool name:
 
 ```python
 from drawbore.tools import TrustLabel
 
-registry.register_mcp_tool("kb:search", handler, source_trust=TrustLabel.TRUSTED)
+await register_mcp_server(
+    registry,
+    name="slack",
+    url="https://slack.com/mcp",
+    allowed_tools=["send_message", "read_status"],
+    client=client,
+    exfil_capable={"send_message": True},            # a sink — outward write
+    source_trust={"read_status": TrustLabel.TRUSTED},  # an internal read you trust
+)
 ```
+
+`send_message` is now refused while the step is handling untrusted data, exactly as a
+custom `register_tool("http_post", handler, exfil_capable=True)` would be. A tool you do
+not name in either map keeps the fail-safe MCP default: untrusted-source and not a sink. A
+flag keyed to a tool that is not in `allowed_tools` raises `ValueError` — you cannot scope
+a flag to a tool the agent can never reach.
 
 See [Taint and trust](/guide/taint-and-trust) for the full model: `initial_trust` for
 untrusted-ingest workflows, cross-step propagation, and `When` branch gating.
