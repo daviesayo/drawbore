@@ -141,6 +141,134 @@ def mocks_fingerprint(baseline_mocks: Mapping) -> str:
     return canonical_fingerprint(normalized)
 
 
+def _first_required_field(model: type) -> str:
+    for name, field in model.model_fields.items():
+        if field.is_required():
+            return name
+    raise RatchetError(
+        f"output model {model.__name__!r} has no required field; a schema "
+        f"provocation cannot be derived for it"
+    )
+
+
+def derive_cases(
+    config,
+    pipeline,
+    result,
+    *,
+    initial,
+    baseline_mocks: Mapping,
+    derived_at: str,
+    predecessor: str | None,
+):
+    """Mechanically derive regression cases from an observed COMPLETED baseline.
+
+    Cases are derived only for one-shot model steps (model set, no tools) whose
+    pipeline prefix (every step at a smaller index — scheduler order) contains no
+    model+tools step, so every replay can traverse the prefix using the pinned
+    serializable mock subset. Derivation is the only authoring path: the
+    provocation payloads come from the run's own validated outputs, never from a
+    hand-written case.
+    """
+    from drawbore.escalation import HasConfidence
+    from drawbore.pipeline.graph import JoinNode
+    from drawbore.testing import Containment
+
+    if result.status != "completed":
+        raise RatchetError(
+            f"baseline run must be completed to derive cases (got "
+            f"status={result.status!r}) — a completed run proves the benign mock "
+            f"bundle reaches every executed step"
+        )
+    mocks_hash = mocks_fingerprint(baseline_mocks)  # also validates the bundle keys
+    initial_hash = canonical_fingerprint(initial.model_dump(mode="json"))
+    baseline_fp = canonical_fingerprint(config.model_dump(mode="json"))
+
+    executed_ok = {
+        s.agent
+        for s in (result.audit_trace.step_records if result.audit_trace else [])
+        if s.status == "ok"
+    }
+
+    cases = []
+    tail = predecessor if predecessor is not None else GENESIS
+    counter = 0
+    saw_loop = False
+    for node in pipeline.steps:
+        if isinstance(node, JoinNode):
+            continue
+        spec = node.agent.spec
+        is_loop = spec.model is not None and bool(spec.tools)
+        is_one_shot = spec.model is not None and not spec.tools
+        if is_loop:
+            saw_loop = True
+            continue
+        if not is_one_shot or saw_loop or spec.name not in executed_ok:
+            continue
+        observed = result.outputs[spec.name].model_dump(mode="json")
+
+        def _seal(prop: SafetyProperty, cc: ContainmentCase):
+            nonlocal tail, counter
+            counter += 1
+            case = seal_case(
+                case_id=f"c-{counter:03d}",
+                property=prop,
+                containment_case=cc,
+                baseline_fingerprint=baseline_fp,
+                initial_hash=initial_hash,
+                baseline_mocks_hash=mocks_hash,
+                derived_at=derived_at,
+                predecessor_hash=tail,
+            )
+            tail = case.case_hash
+            cases.append(case)
+
+        bad = dict(observed)
+        bad.pop(_first_required_field(spec.output), None)
+        _seal(
+            SafetyProperty(
+                dim="schema_violations", step=spec.name, assertion="neq", value="0",
+                description=(
+                    f"an output from '{spec.name}' violating its declared schema "
+                    f"must be rejected"
+                ),
+            ),
+            ContainmentCase(
+                name=f"schema_violation:{spec.name}", kind="schema_violation",
+                target=spec.name, payload=bad, expect=Containment.SCHEMA_REJECT,
+            ),
+        )
+
+        if issubclass(spec.output, HasConfidence):
+            low = dict(observed)
+            low["confidence"] = 0.0
+            expect = (
+                Containment.ESCALATED if pipeline.on_failure is not None
+                else Containment.HALTED
+            )
+            _seal(
+                SafetyProperty(
+                    dim="run_status", step=spec.name, assertion="neq",
+                    value="completed",
+                    description=(
+                        f"a below-threshold confidence from '{spec.name}' must "
+                        f"not complete the run"
+                    ),
+                ),
+                ContainmentCase(
+                    name=f"low_confidence:{spec.name}", kind="low_confidence",
+                    target=spec.name, payload=low, expect=expect,
+                ),
+            )
+
+    if not cases:
+        raise RatchetError(
+            "no derivable cases: the pipeline has no one-shot model step ahead of "
+            "its first model+tools step, so a ratchet over it would be vacuous"
+        )
+    return cases
+
+
 class RegressionCorpus(ABC):
     """Append-only store for the case chain."""
 

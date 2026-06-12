@@ -11,6 +11,7 @@ from .corpus import (
     RegressionCase,
     RegressionCorpus,
     SafetyProperty,
+    derive_cases,
     mocks_fingerprint,
     seal_case,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "RegressionCase",
     "RegressionCorpus",
     "SafetyProperty",
+    "derive_cases",
     "mocks_fingerprint",
     "seal_case",
 ]
