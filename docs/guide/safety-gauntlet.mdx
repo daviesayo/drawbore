@@ -27,6 +27,34 @@ attack was **not** contained (the run completed) — a failure. Builders: `schem
 a multi-step pipeline, pass `baseline=` benign mocks for the non-target steps so the target is
 reached.
 
+## Profile-bound pipelines
+
+If your agents bind a model by profile (`model="profile:..."`) rather than a direct model
+string, forward the same runtime config you run them with so the profile resolves instead of
+halting `model_config_error` before the attack is provoked. `run_containment`,
+`assert_contained`, and `run_pack` all accept `llm_config=` and `credential_checker=` and pass
+them straight through to `test_mode`. As everywhere in test mode, the profile resolves against
+the credential checker and **no provider is ever called**.
+
+```python
+from drawbore.llm import LLMRuntimeConfig, ModelProfile, ModelTarget, ProviderConfig
+from drawbore.testing import StaticCredentialChecker, assert_contained, schema_violation
+
+llm_config = LLMRuntimeConfig(
+    profiles={"judgment": ModelProfile(targets=(
+        ModelTarget(provider="openrouter", model="anthropic/claude-3-5-sonnet"),
+    ))},
+    providers={"openrouter": ProviderConfig(credential_env="OPENROUTER_API_KEY")},
+)
+
+case = schema_violation("risk_scorer", {"missing": "required fields"})
+await assert_contained(
+    pipeline, case, initial=my_input,
+    llm_config=llm_config,
+    credential_checker=StaticCredentialChecker(available=True),
+)
+```
+
 **Honest scope:** a green gauntlet proves refusal only on the attack paths it exercises. It is
 *not* a proof that bypass is impossible — that is an architectural property of Drawbore's
 single tool chokepoint, not something this corpus establishes. `denied:token` / `denied:scope`

@@ -98,26 +98,71 @@ def _merge(baseline: "dict | None", provocation: dict) -> dict:
     return {key: val for key, val in merged.items() if val}
 
 
-async def run_containment(pipeline, case: ContainmentCase, *, initial, baseline=None):
+async def run_containment(
+    pipeline,
+    case: ContainmentCase,
+    *,
+    initial,
+    baseline=None,
+    llm_config=None,
+    credential_checker=None,
+):
     """Provoke `case` on `pipeline` through test_mode; return the observed Containment,
-    or None if the run COMPLETED (the attack was NOT contained)."""
+    or None if the run COMPLETED (the attack was NOT contained).
+
+    Pass `llm_config` / `credential_checker` for pipelines whose agents bind a
+    `model="profile:..."` reference; they are forwarded to `test_mode` so the profile
+    resolves (against the fake credential checker) instead of halting `model_config_error`
+    before the attack is provoked."""
     mocks = _merge(baseline, _provoke(case))
-    async with pipeline.test_mode(**mocks) as tp:
+    async with pipeline.test_mode(
+        **mocks, llm_config=llm_config, credential_checker=credential_checker
+    ) as tp:
         result = await tp.run(initial)
     return _verdict(result)
 
 
-async def assert_contained(pipeline, case: ContainmentCase, *, initial, baseline=None) -> None:
-    observed = await run_containment(pipeline, case, initial=initial, baseline=baseline)
+async def assert_contained(
+    pipeline,
+    case: ContainmentCase,
+    *,
+    initial,
+    baseline=None,
+    llm_config=None,
+    credential_checker=None,
+) -> None:
+    observed = await run_containment(
+        pipeline,
+        case,
+        initial=initial,
+        baseline=baseline,
+        llm_config=llm_config,
+        credential_checker=credential_checker,
+    )
     if observed != case.expect:
         raise AssertionError(
             f"containment case {case.name!r} ({case.kind}): expected {case.expect}, got {observed}"
         )
 
 
-async def run_pack(pipeline, cases, *, initial, baseline=None) -> dict:
+async def run_pack(
+    pipeline,
+    cases,
+    *,
+    initial,
+    baseline=None,
+    llm_config=None,
+    credential_checker=None,
+) -> dict:
     """Run every case (all targeting steps in `pipeline`); return {case.name: observed}."""
     report: dict = {}
     for case in cases:
-        report[case.name] = await run_containment(pipeline, case, initial=initial, baseline=baseline)
+        report[case.name] = await run_containment(
+            pipeline,
+            case,
+            initial=initial,
+            baseline=baseline,
+            llm_config=llm_config,
+            credential_checker=credential_checker,
+        )
     return report

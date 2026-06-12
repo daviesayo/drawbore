@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Safety gauntlet runners (`run_containment`, `assert_contained`, `run_pack`)
+  now accept `llm_config=` and `credential_checker=` and forward them to
+  `test_mode`, so the shipped containment corpus works on pipelines whose
+  agents bind a model by profile (`model="profile:..."`). Without them a
+  profile-bound pipeline halted `model_config_error` before the attack was
+  provoked. As in all of test mode, the profile resolves against the credential
+  checker and no provider is called.
+
 ## [0.2.0] - 2026-06-11
 
 ### Added
