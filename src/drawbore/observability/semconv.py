@@ -34,6 +34,8 @@ DRAWBORE_INPUT_HASH = "drawbore.input_hash"
 DRAWBORE_OUTPUT_HASH = "drawbore.output_hash"
 DRAWBORE_TOOL_OPERATION = "drawbore.tool.operation"
 DRAWBORE_DECLARED_MODEL = "drawbore.declared_model"
+# How many bounded corrective structured-output reprompts a step's model turn took.
+DRAWBORE_STRUCTURED_OUTPUT_REPROMPTS = "drawbore.structured_output.reprompts"
 
 # --- Evidence compression ---
 DRAWBORE_EVIDENCE_DECISION = "drawbore.evidence.decision"

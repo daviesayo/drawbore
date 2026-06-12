@@ -234,6 +234,56 @@ async def test_loop_no_reprompt_when_no_model_budget_remains(fake_adk_model):
     assert len(bundle.turns) == 1  # the reprompt was NOT attempted (budget exhausted)
 
 
+async def test_loop_reprompts_on_schema_invalid_final_then_recovers(fake_adk_model):
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # The model's final answer is a VALID JSON object but it does not match the agent's
+    # output schema (missing the required 'answer' field). The loop reprompts ONCE,
+    # seeded with the field errors; the corrected answer matches the schema and the run
+    # completes. The reprompt is a pure model turn — no tool runs from it.
+    script = [
+        ("call", "lookup", {"key": "x"}),               # turn 1: structured tool call
+        ("text", json.dumps({"wrong": "x"})),           # turn 2: object, schema-INVALID
+        ("text", json.dumps({"answer": "fixed"})),      # turn 3 (after reprompt): valid
+    ]
+    reg, proxy, bundle = _wiring()
+    output, model_turns = await run_agentic_loop(
+        solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+    )
+    assert output == {"answer": "fixed"}
+    # The tool ran EXACTLY ONCE — from the structured call, never from a reprompt turn.
+    assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
+    assert model_turns == 3                  # call + invalid-final + corrected-final
+
+
+async def test_loop_schema_reprompt_budget_is_shared_not_stacked(fake_adk_model):
+    from drawbore.orchestration.adk_loop import _run_one_attempt
+
+    @agent(name="solver", input=In, output=Out, model="fake", tools=["lookup"])
+    async def solver(v: In) -> Out:
+        raise AssertionError("must not run")
+
+    # A schema-invalid object earns the single bounded reprompt; if the corrected answer
+    # is STILL schema-invalid the object is RETURNED (reprompts == 1) for the pipeline's
+    # authoritative schema gate to halt — the loop never reprompts a second time.
+    script = [
+        ("text", json.dumps({"wrong": "x"})),           # turn 1: object, schema-INVALID
+        ("text", json.dumps({"still": "bad"})),         # turn 2 (reprompt): STILL invalid
+        ("text", json.dumps({"answer": "unreached"})),  # turn 3 must never be reached
+    ]
+    reg, proxy, bundle = _wiring()
+    output, model_turns, reprompts = await _run_one_attempt(
+        solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        model="fake", model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
+    )
+    assert output == {"still": "bad"}        # returned, NOT corrected — gate halts later
+    assert reprompts == 1                    # exactly one reprompt, never two
+    assert model_turns == 2                  # the third scripted turn was never reached
+
+
 async def test_loop_ambiguous_multiple_json_objects_fails_closed(fake_adk_model):
     from drawbore.llm import LLMError
 

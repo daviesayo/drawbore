@@ -42,18 +42,6 @@ class LLMError(DrawboreError):
     halt_reason = "model_error"
 
 
-class _RetryableContractError(LLMError):
-    """A contract violation that is safely re-attemptable for a SIDE-EFFECT-FREE
-    one-shot completion: a 200 carrying no usable text (empty / null / non-JSON
-    body), the kind of transient failure a single immediate re-call routinely
-    clears. Internal to the gateway retry path — never part of the public taxonomy
-    and never raised on the tool-loop path (re-running a loop would replay tool
-    side-effects). It is still an ``LLMError`` (``model_error``): after the single
-    bounded retry is exhausted the gateway re-raises it and the pipeline halts. It
-    is NOT a structural fault (unexpected response shape / non-object JSON), which
-    a retry would not fix and which therefore fails closed immediately."""
-
-
 class ModelUnavailableError(LLMError):
     """Every model in the resolved fallback chain failed. The pipeline
     halts-and-escalates with the legible reason ``"model_unavailable"`` so an

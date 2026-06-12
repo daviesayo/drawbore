@@ -177,6 +177,46 @@ async def test_contract_violation_retries_same_model_never_falls_back(monkeypatc
     assert calls == ["m1", "m1"]             # contract retry stays on m1; never advances the chain
 
 
+async def test_recovers_prose_wrapped_sole_json_object(monkeypatch):
+    # NEW behaviour: the one-shot path now deterministically recovers a single
+    # prose-wrapped JSON object (it previously rejected this). No reprompt, one call.
+    calls = []
+
+    async def fake_acompletion(*, model, messages, stream):
+        calls.append(model)
+        return _fake_response('Here is the result:\n{"risk": "low"}\nThanks!')
+
+    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    gw = LiteLLMGateway()
+    resp = await gw.complete(_request(("m1",)))
+    assert resp.output == {"risk": "low"}
+    assert resp.reprompts == 0                # recovered deterministically
+    assert calls == ["m1"]                    # no reprompt: a single model call
+
+
+async def test_corrective_reprompt_recovers_then_succeeds(monkeypatch):
+    # NEW behaviour: the single re-ask is now a CORRECTIVE reprompt — it re-sends the
+    # original messages PLUS a guidance message asking for a single JSON object — and
+    # the recovered call is surfaced as one reprompt.
+    seen = []
+
+    async def fake_acompletion(*, model, messages, stream):
+        seen.append(messages)
+        if len(seen) == 1:
+            return _fake_response("I am unable to answer in JSON.")   # prose -> absent
+        return _fake_response('{"risk": "low"}')
+
+    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    gw = LiteLLMGateway()
+    resp = await gw.complete(_request(("m1",)))
+    assert resp.output == {"risk": "low"}
+    assert resp.reprompts == 1
+    assert len(seen) == 2                                  # one initial + one re-ask
+    assert len(seen[1]) == len(seen[0]) + 1                # corrective: a message added
+    assert seen[1][-1]["role"] == "user"
+    assert "JSON object" in seen[1][-1]["content"]         # the guidance is corrective
+
+
 async def test_sends_system_and_user_as_messages(monkeypatch):
     seen = {}
 

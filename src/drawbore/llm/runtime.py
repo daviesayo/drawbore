@@ -118,6 +118,7 @@ class LLMRuntime:
                     output=response.output, model_used=response.model_used,
                     raw_text=response.raw_text,
                     usage=response.usage, cost=response.cost,
+                    reprompts=response.reprompts,
                     audit=ModelAudit(
                         declared_refs=chain.declared,
                         selected_provider=attempt.provider, selected_model=attempt.model,

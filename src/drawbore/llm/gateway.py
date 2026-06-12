@@ -10,18 +10,13 @@ deferred. Fallback is request-time completion-with-fallback, NOT mid-stream repl
 
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 
 import litellm
 
-from .errors import (
-    LLMError,
-    ModelUnavailableError,
-    _RetryableContractError,
-    content_excerpt,
-)
+from .errors import LLMError, ModelUnavailableError
 from .request import ModelRequest, ModelResponse
+from .structured_output import OneShotBudget, coerce_structured_output
 from .usage import extract_cost, extract_usage
 
 
@@ -76,48 +71,46 @@ class LiteLLMGateway(LLMGateway):
         )
 
     async def _complete_one(self, model: str, messages: list[dict]) -> ModelResponse:
-        """One model, with a SINGLE bounded retry on a side-effect-free contract
-        violation (empty / non-JSON body). The retry re-calls the SAME model once;
-        it never advances the fallback chain (that is for transport failures) and it
-        never disables halt-and-escalate — after the retry a still-bad body raises.
-        A provider/transport exception propagates so the chain may fall back."""
-        for attempt in range(2):  # one initial call + one contract retry
-            response = await litellm.acompletion(model=model, messages=messages, stream=False)
-            try:
-                return self._parse(response, model)
-            except _RetryableContractError:
-                if attempt == 0:
-                    continue  # transient empty/non-JSON 200: re-call the same model once
-                raise         # still bad after the single retry: fail closed (model_error)
+        """One model, routed through the shared structured-output boundary: a single
+        bounded CORRECTIVE reprompt on an absent body (empty / null / non-JSON), an
+        immediate fail-closed on structural JSON (an array/scalar), then halt. The
+        reprompt re-calls the SAME model once with an added corrective instruction; it
+        never advances the fallback chain (that is for transport failures) and never
+        disables halt-and-escalate. A provider/transport exception propagates so the
+        chain may fall back."""
+        holder: dict = {}
 
-    def _parse(self, response, model: str) -> ModelResponse:
+        async def _reask(hint: str) -> object:
+            corrective = messages + [{"role": "user", "content": hint}]
+            response = await litellm.acompletion(model=model, messages=corrective, stream=False)
+            content = self._content_or_halt(response, model)
+            holder["response"], holder["content"] = response, content
+            return content
+
+        response = await litellm.acompletion(model=model, messages=messages, stream=False)
+        content = self._content_or_halt(response, model)
+        holder["response"], holder["content"] = response, content
+        coerced = await coerce_structured_output(
+            agent=model, initial_text=content, reask=_reask, budget=OneShotBudget(),
+        )
+        won, won_content = holder["response"], holder["content"]
+        return ModelResponse(
+            output=coerced.value, model_used=model,
+            raw_text=won_content if isinstance(won_content, str) else "",
+            usage=extract_usage(won), cost=extract_cost(won),
+            reprompts=coerced.reprompts,
+        )
+
+    @staticmethod
+    def _content_or_halt(response, model: str) -> object:
+        """Read ``choices[0].message.content`` or fail closed on an unreadable provider
+        response shape (a retry would not fix it — never fall back)."""
         try:
-            content = response["choices"][0]["message"]["content"]
+            return response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            # A 200 with an unexpected shape is a STRUCTURAL contract violation; a
-            # retry would not fix it — fail closed immediately, never fall back.
             raise LLMError(
                 f"model '{model}' returned an unexpected response shape: {exc}"
             ) from exc
-        try:
-            output = json.loads(content)
-        except (json.JSONDecodeError, TypeError) as exc:
-            # A 200 with empty / non-JSON content: the transient class. Surface a
-            # bounded excerpt so it is diagnosable, and mark it retryable.
-            raise _RetryableContractError(
-                f"model '{model}' returned non-JSON content: {exc} "
-                f"(content excerpt: {content_excerpt(content)})"
-            ) from exc
-        if not isinstance(output, dict):
-            # Parseable JSON of the wrong shape is structural, not transient — fail
-            # closed immediately (no retry).
-            raise LLMError(
-                f"model '{model}' returned JSON that is not an object: {type(output).__name__}"
-            )
-        return ModelResponse(
-            output=output, model_used=model, raw_text=content,
-            usage=extract_usage(response), cost=extract_cost(response),
-        )
 
 
 # Quiet the provider SDK as soon as the model boundary is imported, so even a

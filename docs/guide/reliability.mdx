@@ -49,3 +49,8 @@ A `resume_drift` halt means a checkpointed run was resumed after the
 pipeline's topology or an agent's declared contract changed; see
 [Durable resume](/guide/durable-resume) for the refusal semantics and the
 resume ledger.
+
+A `model_error` halt means the model returned output Drawbore cannot use after the
+[structured-output boundary](/guide/production-llm-gateway) — including its one bounded
+corrective reprompt — did not recover a usable JSON object; the reason carries a bounded
+excerpt of the offending output.

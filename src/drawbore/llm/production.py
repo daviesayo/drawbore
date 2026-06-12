@@ -9,19 +9,13 @@ the small direct-chain gateway with the same content-contract retry.
 
 from __future__ import annotations
 
-import json
-
 import litellm
 
 from .config import LLMRuntimeConfig
-from .errors import (
-    LLMConfigError,
-    LLMError,
-    _RetryableContractError,
-    content_excerpt,
-)
+from .errors import LLMConfigError, LLMError
 from .gateway import LLMGateway, configure_provider_logging
 from .request import ModelRequest, ModelResponse
+from .structured_output import OneShotBudget, coerce_structured_output
 from .usage import extract_cost, extract_usage
 
 
@@ -40,7 +34,7 @@ class ProductionLLMGateway(LLMGateway):
             raise LLMConfigError("ProductionLLMGateway received an empty model_chain")
         model = request.model_chain[0]
         provider = model.split("/", 1)[0] if "/" in model else None
-        kwargs: dict[str, object] = {
+        base_kwargs: dict[str, object] = {
             "model": model,
             "stream": False,
             "messages": [
@@ -51,55 +45,52 @@ class ProductionLLMGateway(LLMGateway):
         provider_cfg = self._config.providers.get(provider) if provider else None
         if provider_cfg is not None:
             if provider_cfg.base_url is not None:
-                kwargs["base_url"] = provider_cfg.base_url
+                base_kwargs["base_url"] = provider_cfg.base_url
             if provider_cfg.timeout_seconds is not None:
-                kwargs["timeout"] = provider_cfg.timeout_seconds
+                base_kwargs["timeout"] = provider_cfg.timeout_seconds
             for k, v in provider_cfg.extra.items():
-                kwargs.setdefault(k, v)
-        # SINGLE bounded retry on a side-effect-free contract violation (a 200 with no
-        # usable text: null / empty / non-JSON body) — the transient class a single
-        # immediate re-call routinely clears. The retry never disables halt-and-escalate
-        # (a still-bad body after it raises) and never masks a structural fault (bad
-        # shape / non-object JSON fails closed at once). Provider/transport exceptions
-        # propagate raw on every call (the runtime classifies them).
-        for attempt in range(2):  # one initial call + one contract retry
-            response = await litellm.acompletion(**kwargs)
-            try:
-                return self._parse(response, model)
-            except _RetryableContractError:
-                if attempt == 0:
-                    continue
-                raise  # still bad after the single retry: fail closed (model_error)
+                base_kwargs.setdefault(k, v)
+        # Route the 200 through the shared structured-output boundary: a single bounded
+        # CORRECTIVE reprompt on a side-effect-free absent body (null / empty / non-JSON
+        # — the transient class a re-ask routinely clears), an immediate fail-closed on
+        # structural JSON (an array/scalar), then halt. The reprompt re-calls the same
+        # model once (re-applying provider config) and never disables halt-and-escalate.
+        # Provider/transport exceptions propagate raw on every call (the runtime
+        # classifies them).
+        holder: dict = {}
 
-    def _parse(self, response, model: str) -> ModelResponse:
+        async def _reask(hint: str) -> object:
+            kwargs = dict(base_kwargs)
+            kwargs["messages"] = list(base_kwargs["messages"]) + [
+                {"role": "user", "content": hint}
+            ]
+            response = await litellm.acompletion(**kwargs)
+            content = self._content_or_halt(response, model)
+            holder["response"], holder["content"] = response, content
+            return content
+
+        response = await litellm.acompletion(**base_kwargs)
+        content = self._content_or_halt(response, model)
+        holder["response"], holder["content"] = response, content
+        coerced = await coerce_structured_output(
+            agent=model, initial_text=content, reask=_reask, budget=OneShotBudget(),
+        )
+        won, won_content = holder["response"], holder["content"]
+        return ModelResponse(
+            output=coerced.value, model_used=model,
+            raw_text=won_content if isinstance(won_content, str) else "",
+            usage=extract_usage(won), cost=extract_cost(won),
+            reprompts=coerced.reprompts,
+        )
+
+    @staticmethod
+    def _content_or_halt(response, model: str) -> object:
+        """Read ``choices[0].message.content`` or fail closed on an unreadable provider
+        response shape (a retry would not fix it). ``None`` content is NOT a shape
+        error — it is an absent body the boundary reprompts on."""
         try:
-            content = response["choices"][0]["message"]["content"]
+            return response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            # Structural: a retry would not fix it — fail closed immediately.
             raise LLMError(
                 f"model '{model}' returned an unexpected response shape: {exc}"
             ) from exc
-        if content is None:
-            # Distinct from a non-JSON string: the model returned no text at all
-            # (e.g. a tool-use or malformed/partial response). Label it precisely;
-            # it is the same transient class as an empty body, so it is retryable.
-            raise _RetryableContractError(
-                f"model '{model}' returned null content "
-                f"(no text in choices[0].message.content)"
-            )
-        try:
-            output = json.loads(content)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise _RetryableContractError(
-                f"model '{model}' returned non-JSON content: {exc} "
-                f"(content excerpt: {content_excerpt(content)})"
-            ) from exc
-        if not isinstance(output, dict):
-            # Structural (parseable JSON of the wrong type): fail closed immediately.
-            raise LLMError(
-                f"model '{model}' returned JSON that is not an object: {type(output).__name__}"
-            )
-        return ModelResponse(
-            output=output, model_used=model, raw_text=content,
-            usage=extract_usage(response), cost=extract_cost(response),
-        )
