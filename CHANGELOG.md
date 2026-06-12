@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Safety ratchet (`drawbore.ratchet`): an admission gate for machine-proposed
+  pipeline manifests. `admit()` accepts a candidate only after fail-closed
+  resolution, an effective-authority monotonicity check (a widening is returned
+  for human review, never auto-admitted), and replay of a hash-chained,
+  mechanically derived regression corpus through the real safety layer in test
+  mode. Verdicts are regulator-legible (`RatchetVerdict.legible()`) and recorded
+  on an append-only `RatchetSink`. The proposal surface is JSON: nothing a
+  manifest can express reaches or edits the verifier. See the safety-ratchet
+  guide.
 - `Pipeline.on_failure` — a read-only property exposing the failure-escalation
   policy the pipeline was configured with, or `None` when failures halt without
   dispatch.
