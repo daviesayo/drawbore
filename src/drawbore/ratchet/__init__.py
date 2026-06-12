@@ -5,14 +5,30 @@ can express reaches the verifier code in this package. ``admit()`` is the only
 sanctioned path from a candidate manifest to a blessed ``Pipeline``.
 """
 
+from .corpus import (
+    GENESIS,
+    InMemoryRegressionCorpus,
+    RegressionCase,
+    RegressionCorpus,
+    SafetyProperty,
+    mocks_fingerprint,
+    seal_case,
+)
 from .errors import CorpusIntegrityError, RatchetError
 from .sink import InMemoryRatchetSink, RatchetSink
 from .verdict import RatchetVerdict
 
 __all__ = [
     "CorpusIntegrityError",
-    "RatchetError",
+    "GENESIS",
     "InMemoryRatchetSink",
+    "InMemoryRegressionCorpus",
+    "RatchetError",
     "RatchetSink",
     "RatchetVerdict",
+    "RegressionCase",
+    "RegressionCorpus",
+    "SafetyProperty",
+    "mocks_fingerprint",
+    "seal_case",
 ]
