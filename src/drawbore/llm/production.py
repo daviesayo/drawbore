@@ -14,7 +14,7 @@ import litellm
 
 from .config import LLMRuntimeConfig
 from .errors import LLMConfigError, LLMError
-from .gateway import LLMGateway
+from .gateway import LLMGateway, configure_provider_logging
 from .request import ModelRequest, ModelResponse
 from .usage import extract_cost, extract_usage
 
@@ -23,6 +23,7 @@ class ProductionLLMGateway(LLMGateway):
     """One non-streaming completion for ``request.model_chain[0]``."""
 
     def __init__(self, *, config: LLMRuntimeConfig) -> None:
+        configure_provider_logging()
         self._config = config
 
     async def complete(self, request: ModelRequest) -> ModelResponse:

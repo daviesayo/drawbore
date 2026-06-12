@@ -20,6 +20,19 @@ from .request import ModelRequest, ModelResponse
 from .usage import extract_cost, extract_usage
 
 
+def configure_provider_logging() -> None:
+    """Silence the provider SDK's unsolicited debug printing.
+
+    The provider SDK prints diagnostic blurbs (a "Provider List" pointer and a
+    "Get Help" note) straight to stdout around failing model attempts, which
+    drowns a program's own output. The gateway owns its dependency's logging
+    config, so a framework user never has to reach past this boundary to quiet
+    the provider SDK. Idempotent; touches only the provider's own debug printing,
+    never any Drawbore safety, audit, or observability signal.
+    """
+    litellm.suppress_debug_info = True
+
+
 class LLMGateway(ABC):
     """The model-call boundary. Implementations perform a single non-streaming
     completion for a :class:`ModelRequest`, walking its fallback chain."""
@@ -32,6 +45,9 @@ class LLMGateway(ABC):
 class LiteLLMGateway(LLMGateway):
     """Completes via ``litellm.acompletion`` (non-streaming), trying each model in
     the request's chain in order and advancing on failure."""
+
+    def __init__(self) -> None:
+        configure_provider_logging()
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         messages = [
@@ -74,3 +90,9 @@ class LiteLLMGateway(LLMGateway):
         raise ModelUnavailableError(
             f"all models failed for chain {request.model_chain}: {last_error}"
         )
+
+
+# Quiet the provider SDK as soon as the model boundary is imported, so even a
+# transitive import of this package (before any gateway is constructed) does not
+# leave the provider's stdout debug printing on.
+configure_provider_logging()

@@ -19,6 +19,23 @@ reg.register_mcp_tool("docs:fetch", handler)                           # untrust
 reg.register_tool("http_post", handler, exfil_capable=True)            # a sink
 ```
 
+The same two facts belong on MCP tools, and an MCP server is the most likely place an
+outward-writing tool comes from. Declare them per tool on `register_mcp_server` so the
+sink-gate protects an MCP notifier exactly as it protects a custom one:
+
+```python
+from drawbore.tools import TrustLabel
+
+await register_mcp_server(
+    reg, name="slack", url="https://slack.com/mcp",
+    allowed_tools=["send_message", "read_status"], client=client,
+    exfil_capable={"send_message": True},              # an MCP sink
+    source_trust={"read_status": TrustLabel.TRUSTED},  # an internal read you trust
+)
+```
+
+A tool you do not name keeps the fail-safe MCP default: untrusted-source and not a sink.
+
 A step's trust scope starts from its inputs; invoking an untrusted-source tool taints the
 step; a downstream step seeded from a tainted output starts untrusted. Any `exfil_capable`
 call under an untrusted scope halts with `taint_violation`. A `When` predicate that reads a
