@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-12
+
 ### Fixed
 - The registration-time static compatibility check now accepts a narrowed `Literal[...]`
   output bound to its wider base-type input. An upstream field typed
