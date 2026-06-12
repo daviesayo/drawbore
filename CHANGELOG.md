@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-12
+
 ### Added
 - `RunResult.audit_trace` now records a per-step `reprompts` count (`0` or `1`) — how
   many bounded corrective structured-output reprompts a step's model turn took. It is
