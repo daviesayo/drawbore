@@ -17,6 +17,7 @@ import litellm
 
 from .errors import LLMError, ModelUnavailableError
 from .request import ModelRequest, ModelResponse
+from .usage import extract_cost, extract_usage
 
 
 def configure_provider_logging() -> None:
@@ -82,7 +83,10 @@ class LiteLLMGateway(LLMGateway):
                 raise LLMError(
                     f"model '{model}' returned JSON that is not an object: {type(output).__name__}"
                 )
-            return ModelResponse(output=output, model_used=model, raw_text=content)
+            return ModelResponse(
+                output=output, model_used=model, raw_text=content,
+                usage=extract_usage(response), cost=extract_cost(response),
+            )
         raise ModelUnavailableError(
             f"all models failed for chain {request.model_chain}: {last_error}"
         )

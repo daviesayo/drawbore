@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from drawbore.llm import LLMGateway, ModelRequest, ModelResponse
+from drawbore.llm import LLMGateway, ModelRequest, ModelResponse, TokenUsage
 
 from .errors import TestingError
 
@@ -30,12 +30,17 @@ def _is_exception(value: Any) -> bool:
 class FakeGateway(LLMGateway):
     """Returns scripted one-shot responses for a single named agent."""
 
-    def __init__(self, *, agent_name: str, response: Any) -> None:
+    def __init__(
+        self, *, agent_name: str, response: Any, usage: TokenUsage | None = None
+    ) -> None:
         self._agent_name = agent_name
         # A list/tuple is a sequence consumed in order; anything else is reused.
         self._sequence = list(response) if isinstance(response, (list, tuple)) else None
         self._single = None if self._sequence is not None else response
         self._has_single = self._sequence is None and response is not None
+        # The fake provider's reported token usage for this agent (None = the
+        # provider reports no usage, mirroring a real call that omits it).
+        self._usage = usage
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         if self._sequence is not None:
@@ -67,4 +72,5 @@ class FakeGateway(LLMGateway):
         return ModelResponse(
             output=output, model_used=request.model_chain[0],
             raw_text=json.dumps(output, sort_keys=True),
+            usage=self._usage,
         )

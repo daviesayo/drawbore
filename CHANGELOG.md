@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-safe default (untrusted-source, not a sink); a flag keyed to a tool not in
   `allowed_tools` raises `ValueError`. Documented in the MCP tools and taint-and-trust
   guides.
+- `RunResult.metrics`: a quantitative cost and performance view of every run,
+  separate from the legible audit trace. It carries per-step wall-clock
+  `duration_seconds`, per-step model `tokens` (a provider-agnostic `TokenUsage` of
+  `input_tokens` / `output_tokens` / `total_tokens`) and provider-reported `cost`,
+  and the tool-proxy call log (`tool`, `operation`, `duration_seconds`, `result`).
+  `tokens` and `cost` are `None` when the provider does not report them — cost is
+  never fabricated from a pricing table. `metrics.to_dict()` renders the whole
+  object to JSON-safe primitives.
+- `TokenUsage` (from `drawbore.llm`) and `RunMetrics` / `StepMetric` /
+  `ToolCallMetric` (from `drawbore.audit`) on the public surface.
+- `ModelResponse` now carries `usage` and `cost` read off the provider response.
+- Test mode: `pipeline.test_mode(mock_model_usage={...})` lets the fake provider
+  report token usage for a one-shot model agent so `result.metrics` can be
+  asserted in tests.
 
 ### Fixed
 - The LLM gateway now silences the underlying provider SDK's unsolicited debug

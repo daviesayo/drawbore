@@ -65,6 +65,35 @@ When a run can't proceed — a [halt or escalation](/guide/escalation) — the s
 record names the step it stopped at and why, so the trace reads end-to-end whether
 the run completed or not.
 
+## Metrics: the cost and performance view
+
+The audit record answers "what happened"; `result.metrics` answers "how much did
+it cost and how long did it take". It is a separate, quantitative object present on
+every run, so you can run a cost or performance analysis off the public surface
+without re-deriving anything out of band:
+
+```python
+result = await pipeline.run(transaction)
+
+for step in result.metrics.steps:
+    print(step.agent, step.duration_seconds, step.tokens, step.cost)
+    # 'risk_scorer' 0.42 TokenUsage(input_tokens=812, output_tokens=64, total_tokens=876) 0.0013
+
+for call in result.metrics.tool_calls:
+    print(call.tool, call.operation, call.duration_seconds, call.result)
+    # 'mcp://identity/verify' invoke 0.08 ok
+
+blob = result.metrics.to_dict()   # JSON-safe primitives for export
+```
+
+Each step carries its wall-clock `duration_seconds`, and — for a model-backed step —
+the call's `tokens` (a provider-agnostic `TokenUsage` of `input_tokens` /
+`output_tokens` / `total_tokens`) and provider-reported `cost`. Both `tokens` and
+`cost` are `None` when the provider does not report them; Drawbore never fabricates a
+cost from a pricing table. `tool_calls` is the proxy's per-call log (tool, operation,
+duration, disposition) — the same chokepoint the spans and audit trail see, so
+metrics correlate to the audit trace by `run_id` and step index.
+
 Spans can be sampled and dropped by your drain; the audit record is not — it is the
 defensible answer to "show me exactly what happened to transaction X." The
 open-source core gives you the basic, readable, exportable log; tamper-evident,

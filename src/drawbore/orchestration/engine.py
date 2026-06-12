@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     # Deferred: drawbore.llm transitively imports litellm. Annotation-only use is
     # safe under `from __future__ import annotations`; a future
     # get_type_hints(StepExecution) call in a cold-import context would NameError.
-    from drawbore.llm import ModelAudit
+    from drawbore.llm import ModelAudit, TokenUsage
 
 
 @dataclass
@@ -52,13 +52,16 @@ class StepExecution:
     """A model-capable engine's step result. ``output`` is the raw pre-validation
     value the pipeline validates; ``model_audit`` carries the provider-attempt
     summary (None for deterministic steps); ``model_turns`` is the model-turn count
-    (0 deterministic, 1 one-shot, len(turns) for a loop). The pipeline normalizes a
-    raw (non-StepExecution) return to ``StepExecution(output=value)`` for backward
-    compatibility."""
+    (0 deterministic, 1 one-shot, len(turns) for a loop). ``usage`` and ``cost`` carry
+    the call's token counts and provider-reported cost (each None when the engine path
+    or provider does not report them). The pipeline normalizes a raw (non-StepExecution)
+    return to ``StepExecution(output=value)`` for backward compatibility."""
 
     output: Any
     model_audit: ModelAudit | None = None
     model_turns: int = 0
+    usage: "TokenUsage | None" = None
+    cost: float | None = None
 
 
 class OrchestratorEngine(ABC):

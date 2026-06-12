@@ -19,6 +19,7 @@ from .production import ProductionLLMGateway
 from .request import ModelRequest, ModelResponse
 from .resolution import ModelAttempt, ResolvedModelChain, resolve_chain
 from .runtime import LLMRuntime
+from .usage import TokenUsage, extract_cost, extract_usage
 
 __all__ = [
     "ModelRequest",
@@ -47,4 +48,7 @@ __all__ = [
     "ModelAudit",
     "ProviderOutcome",
     "classify_provider_exception",
+    "TokenUsage",
+    "extract_usage",
+    "extract_cost",
 ]

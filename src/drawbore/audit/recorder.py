@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .metrics import RunMetrics, StepMetric, ToolCallMetric
 from .records import AuditRecord, StepAuditRecord
 
 if TYPE_CHECKING:
-    from drawbore.llm import ModelAudit
+    from drawbore.llm import ModelAudit, TokenUsage
 
 
 class AuditRecorder:
@@ -25,6 +26,17 @@ class AuditRecorder:
         self._version = version
         self._tenant_id = tenant_id
         self._steps: list[StepAuditRecord] = []
+        # Parallel quantitative view (duration/tokens/cost per executed step) plus a
+        # bound reference to the tool-proxy log (read at build time). Kept separate
+        # from the legible audit record so the immutable trace is unaffected.
+        self._step_metrics: list[StepMetric] = []
+        self._tool_log: list[dict] | None = None
+
+    def bind_tool_log(self, log: list[dict]) -> None:
+        """Bind the live tool-proxy log (a list mutated in place during the run).
+        ``build_metrics`` reads it at the end, so binding the reference once is
+        enough."""
+        self._tool_log = log
 
     def record_step(
         self,
@@ -42,6 +54,9 @@ class AuditRecorder:
         condition: str | None = None,
         node_kind: str = "agent",
         join: str | None = None,
+        duration_seconds: float | None = None,
+        tokens: "TokenUsage | None" = None,
+        cost: float | None = None,
     ) -> None:
         """Record one successfully-completed step."""
         self._steps.append(
@@ -51,6 +66,12 @@ class AuditRecorder:
                 tool_calls=tuple(tool_calls), reason=None, evidence=evidence,
                 model_turns=model_turns, model=model, condition=condition,
                 node_kind=node_kind, join=join,
+            )
+        )
+        self._step_metrics.append(
+            StepMetric(
+                index=index, agent=agent, duration_seconds=duration_seconds,
+                tokens=tokens, cost=cost,
             )
         )
 
@@ -66,6 +87,9 @@ class AuditRecorder:
         reason: str,
         model_turns: int = 0,
         model: "ModelAudit | None" = None,
+        duration_seconds: float | None = None,
+        tokens: "TokenUsage | None" = None,
+        cost: float | None = None,
     ) -> None:
         """Record a step that halted AFTER doing work (e.g. a denied in-loop tool
         call). Status ``"failed"``; NOT counted in the run's ``steps`` (success
@@ -76,6 +100,12 @@ class AuditRecorder:
                 status="failed", input_hash=input_hash, output_hash=None,
                 tool_calls=tuple(tool_calls), reason=reason, model_turns=model_turns,
                 model=model,
+            )
+        )
+        self._step_metrics.append(
+            StepMetric(
+                index=index, agent=agent, duration_seconds=duration_seconds,
+                tokens=tokens, cost=cost,
             )
         )
 
@@ -117,4 +147,19 @@ class AuditRecorder:
             reason=reason,
             step_records=tuple(self._steps),
             halted_at=halted_at,
+        )
+
+    def build_metrics(self) -> RunMetrics:
+        """Finalize the quantitative metrics for a finished run: the per-step
+        durations/tokens/cost accumulated during the run plus the tool-proxy call log
+        (empty when no tools ran or the log was never bound)."""
+        tool_calls = (
+            tuple(ToolCallMetric.from_log_entry(e) for e in self._tool_log)
+            if self._tool_log is not None
+            else ()
+        )
+        return RunMetrics(
+            run_id=self._run_id,
+            steps=tuple(self._step_metrics),
+            tool_calls=tool_calls,
         )

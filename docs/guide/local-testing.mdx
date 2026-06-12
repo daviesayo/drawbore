@@ -38,6 +38,10 @@ block exits.
 - **`mock_loop_scripts`** — keyed by agent name for model+tools agents: `call(...)`,
   `final(...)`, `text(...)`, and `multi_call(...)` describe scripted model turns for
   the real agentic loop.
+- **`mock_model_usage`** — keyed by agent name: a `TokenUsage` the fake provider
+  reports for a one-shot model agent, so `result.metrics` surfaces token counts in
+  tests. Omit it to model a provider that reports no usage (the step's `tokens` stays
+  `None`). See [observability and metrics](/guide/observability-audit).
 
 Test mode **fails closed**. A declared tool with no mock, a missing model response,
 or a missing loop script raises a legible `TestingError` and halts — it never falls
