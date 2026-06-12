@@ -16,6 +16,7 @@ from .config import LLMRuntimeConfig
 from .errors import LLMConfigError, LLMError
 from .gateway import LLMGateway
 from .request import ModelRequest, ModelResponse
+from .usage import extract_cost, extract_usage
 
 
 class ProductionLLMGateway(LLMGateway):
@@ -71,4 +72,7 @@ class ProductionLLMGateway(LLMGateway):
             raise LLMError(
                 f"model '{model}' returned JSON that is not an object: {type(output).__name__}"
             )
-        return ModelResponse(output=output, model_used=model, raw_text=content)
+        return ModelResponse(
+            output=output, model_used=model, raw_text=content,
+            usage=extract_usage(response), cost=extract_cost(response),
+        )

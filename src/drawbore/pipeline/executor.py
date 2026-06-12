@@ -206,5 +206,6 @@ class StepExecutor:
                 input_hash=input_hash, tool_calls=tool_calls,
                 evidence_summary=evidence_summary,
                 model_audit=execution.model_audit, model_turns=execution.model_turns,
+                tokens=execution.usage, cost=execution.cost,
             ),
         )

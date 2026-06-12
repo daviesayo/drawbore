@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from drawbore.agent import AgentSpec
-from drawbore.llm import CredentialChecker, LLMGateway, LLMRuntime, LLMRuntimeConfig
+from drawbore.llm import CredentialChecker, LLMGateway, LLMRuntime, LLMRuntimeConfig, TokenUsage
 from drawbore.orchestration import ADKEngine, OrchestratorEngine, ToolLoopBundle, make_scripted_model_factory
 
 from .credentials import StaticCredentialChecker
@@ -48,12 +48,14 @@ class TestEngine(OrchestratorEngine):
         *,
         model_responses: Mapping[str, Any],
         loop_scripts: Mapping[str, Any],
+        model_usage: Mapping[str, TokenUsage] | None = None,
         max_llm_calls: int = 8,
         llm_config: LLMRuntimeConfig | None = None,
         credential_checker: CredentialChecker | None = None,
     ) -> None:
         self._model_responses = dict(model_responses)
         self._loop_scripts = dict(loop_scripts)
+        self._model_usage = dict(model_usage or {})
         self._max_llm_calls = max_llm_calls
         # The per-step LLMRuntime resolves profile:* refs for real (config + fake
         # credential checker) while the FakeGateway/scripted factory supply the mocked
@@ -92,6 +94,7 @@ class TestEngine(OrchestratorEngine):
             gateway = FakeGateway(
                 agent_name=spec.name,
                 response=None if response is _MISSING else response,
+                usage=self._model_usage.get(spec.name),
             )
             # The runtime resolves the declared model (profile:* or direct) for real,
             # then calls the FakeGateway for the mocked response — no provider call.

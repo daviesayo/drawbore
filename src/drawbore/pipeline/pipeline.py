@@ -6,13 +6,14 @@ gate at every edge, and halt-on-violation. The engine runs only individual steps
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping
 
 from pydantic import BaseModel
 
 from drawbore.agent import Agent
-from drawbore.audit import AuditRecord, AuditRecorder, AuditSink
+from drawbore.audit import AuditRecord, AuditRecorder, AuditSink, RunMetrics
 from drawbore.context import build_input, sanitize
 from drawbore.evidence import (
     EvidencePolicy,
@@ -69,6 +70,7 @@ class RunResult:
     run_id: str | None = None
     halt_code: str | None = None
     resume_ledger: "ResumeLedger | None" = None
+    metrics: "RunMetrics | None" = None
 
 
 class Pipeline:
@@ -427,6 +429,7 @@ class Pipeline:
                 result.audit_trace = record
                 result.run_id = resolved_run_id
                 result.resume_ledger = ledger_builder.build()
+                result.metrics = recorder.build_metrics()
 
     async def _run_inner(
         self,
@@ -467,6 +470,9 @@ class Pipeline:
         issuer = TokenIssuer()
         ledger = TaintLedger(initial_trust=initial_trust, managed=True)
         proxy = ToolProxy(registry, issuer, ledger=ledger)
+        # Expose the proxy's per-call log (tool, operation, duration, disposition) on
+        # RunResult.metrics via the recorder, which reads it at build time.
+        recorder.bind_tool_log(proxy.log)
         state = RunState(run_id=run_id)
         if checkpoints is not None:
             from .graph import JoinNode as _JoinNode
@@ -737,10 +743,12 @@ class Pipeline:
                 step.inputs, outputs, initial=initial,
                 predecessor=self._node_name(self.steps[idx - 1]) if idx > 0 else None,
             )
+            step_start = time.monotonic()
             outcome = await executor.execute(
                 agent=step.agent, idx=idx, run_id=run_id, payload=payload,
                 evidence_policy=step.evidence, tenant_id=tenant_id, agent_id=agent_id,
             )
+            step_duration = time.monotonic() - step_start
             if isinstance(outcome, Halt):
                 state.error_count += 1
                 # If the failing step ran tools (e.g. a denied in-loop call),
@@ -754,6 +762,8 @@ class Pipeline:
                         agent_id=agent_id, input_hash=outcome.audit.input_hash,
                         tool_calls=outcome.audit.tool_calls, reason=outcome.reason,
                         model_turns=outcome.audit.model_turns, model=None,
+                        duration_seconds=step_duration,
+                        tokens=outcome.audit.tokens, cost=outcome.audit.cost,
                     )
 
                 return self._halt(
@@ -821,6 +831,8 @@ class Pipeline:
                 tool_calls=audit.tool_calls, evidence=audit.evidence_summary,
                 model_turns=audit.model_turns, model=audit.model_audit,
                 condition=(f"{step.when.legible()} (true)" if step.when is not None else None),
+                duration_seconds=step_duration,
+                tokens=audit.tokens, cost=audit.cost,
             )
             outputs[name] = validated_out
             output_trust[name] = ledger.scope(run_id, idx)
@@ -841,6 +853,7 @@ class Pipeline:
         mock_tools: "Mapping[str, Any] | None" = None,
         mock_model_responses: "Mapping[str, Any] | None" = None,
         mock_loop_scripts: "Mapping[str, Any] | None" = None,
+        mock_model_usage: "Mapping[str, Any] | None" = None,
         allow_real_tools: "Collection[str]" = (),
         evidence_store: "Any | None" = None,
         audit_sink: "Any | None" = None,
@@ -863,6 +876,7 @@ class Pipeline:
             mock_tools=mock_tools,
             mock_model_responses=mock_model_responses,
             mock_loop_scripts=mock_loop_scripts,
+            mock_model_usage=mock_model_usage,
             allow_real_tools=allow_real_tools,
             evidence_store=evidence_store,
             audit_sink=audit_sink,

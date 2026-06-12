@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from drawbore.audit import AuditSink, InMemoryAuditSink
 from drawbore.evidence import EvidenceStore, InMemoryEvidenceStore
-from drawbore.llm import CredentialChecker, LLMRuntimeConfig
+from drawbore.llm import CredentialChecker, LLMRuntimeConfig, TokenUsage
 from drawbore.state import CheckpointStore
 from drawbore.identity import IdentityRegistry
 from drawbore.tools import TrustLabel
@@ -126,6 +126,7 @@ class TestMode:
         mock_tools: Mapping[str, Any] | None = None,
         mock_model_responses: Mapping[str, Any] | None = None,
         mock_loop_scripts: Mapping[str, Any] | None = None,
+        mock_model_usage: Mapping[str, TokenUsage] | None = None,
         allow_real_tools: Collection[str] = (),
         evidence_store: EvidenceStore | None = None,
         audit_sink: AuditSink | None = None,
@@ -152,6 +153,7 @@ class TestMode:
         self._engine = TestEngine(
             model_responses=model_responses,
             loop_scripts=loop_scripts,
+            model_usage=dict(mock_model_usage or {}),
             max_llm_calls=max_llm_calls,
             llm_config=llm_config,
             credential_checker=credential_checker,

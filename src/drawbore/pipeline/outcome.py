@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     # Deferred: drawbore.llm transitively imports litellm. Annotation-only use is
     # safe under `from __future__ import annotations`; a future
     # get_type_hints(StepAudit) call in a cold-import context would NameError.
-    from drawbore.llm import ModelAudit
+    from drawbore.llm import ModelAudit, TokenUsage
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,8 @@ class StepAudit:
     evidence_summary: str | None = None
     model_audit: ModelAudit | None = None
     model_turns: int = 0
+    tokens: "TokenUsage | None" = None
+    cost: float | None = None
 
 
 @dataclass(frozen=True)

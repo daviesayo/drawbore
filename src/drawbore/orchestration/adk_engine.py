@@ -90,4 +90,7 @@ class ADKEngine(OrchestratorEngine):
         }) as span:
             response = await self._runtime.complete(spec, payload, chain)
             span.set_attribute(semconv.GEN_AI_RESPONSE_MODEL, response.model_used)
-        return StepExecution(output=response.output, model_audit=response.audit, model_turns=1)
+        return StepExecution(
+            output=response.output, model_audit=response.audit, model_turns=1,
+            usage=response.usage, cost=response.cost,
+        )
