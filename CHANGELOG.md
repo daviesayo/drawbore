@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-12
+
 ### Fixed
 - A model+tools tool-loop step no longer halts `model_error` when the model wraps its
   final answer in prose. Because a tool-loop step cannot pin the model to JSON-only
