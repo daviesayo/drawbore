@@ -67,30 +67,39 @@ decision. Auth/config problems halt with `model_config_error`; a model returning
 unusable output halts with `model_error`; an exhausted chain halts with
 `model_unavailable`. Drawbore never falls back on a broken contract by default.
 
-**A non-JSON response is diagnosable, and retried once.** When a model returns a 200
-whose body is empty or not the JSON object the step expects, the `model_error` reason
-now carries a short, bounded excerpt of that offending output (the model's own failed
-text, truncated to a fixed length), so the failure is diagnosable from the halt reason
-and audit record without dumping unbounded content. Because an empty or truncated body
-is often a transient hiccup, a one-shot model call is re-attempted **once** on the same
-model before halting — a single, always-on, bounded retry, not a fallback and not a
-toggle. If the retry still returns unusable output the step halts with `model_error`:
-halt-and-escalate is never weakened. A structural mismatch (a response of the wrong
-shape, or valid JSON that is not an object) is not transient and fails closed
-immediately. A model+tools tool-loop step is not re-run wholesale this way, because
-replaying a loop could replay tool side effects. Instead, because a tool-loop step cannot
-pin the model to JSON-only output on its final turn (provider-side JSON mode and offering
-tools are mutually exclusive, so a `response_format` set in `extra` does not constrain the
-loop's tool-selecting turns), the loop recovers a final answer that wraps exactly one
-top-level JSON object in prose by extracting that object deterministically — a pure
-re-parse of what the model already produced, with no tool re-invoked. When a turn instead
-returns prose with no usable tool call or JSON answer (for example a reasoning model that
-*narrates* a tool call rather than emitting one), the loop reprompts the **same** model
-**once** for a structured tool call or a JSON object — never parsing or executing a tool
-out of the prose, and bounded by the remaining `max_llm_calls` budget. If the single
-reprompt still yields neither a tool call nor valid JSON — or if the answer holds more
-than one (ambiguous) top-level object — the step halts `model_error` with the bounded
-excerpt, naming that the model narrated instead of emitting a structured call.
+**One structured-output boundary, three stages.** Every model turn — a one-shot final
+answer, a tool-loop final answer, and a tool-loop tool-call turn — passes through the
+same boundary: (1) Drawbore extracts a usable JSON object from the model's raw text,
+recovering a single JSON object even when the model wraps it in prose (a pure re-parse
+of what the model already produced — no extra model call, no tool re-invoked); (2) if
+the text holds no usable object, Drawbore sends **at most one** bounded corrective
+reprompt asking for a single JSON object and nothing else; (3) if that still fails, the
+step halts `model_error` with a short, bounded excerpt of the offending output (the
+model's own failed text, truncated to a fixed length) so the failure is diagnosable from
+the halt reason and audit record without dumping unbounded content. The reprompt is
+always on, never a toggle, and bounded to one — halt-and-escalate is never weakened. A
+structural mismatch (a response of the wrong shape, or valid JSON that is *not* an
+object) is not recoverable and fails closed immediately, with no reprompt.
+
+When a corrective reprompt happens it is visible on the audit trail: `RunResult`'s
+`audit_trace` records a per-step `reprompts` count (`0` or `1`), and the step's
+`invoke_agent` span carries `drawbore.structured_output.reprompts`.
+
+The one-shot side of the contract, for a model with no tools:
+
+| Model behaviour | Outcome |
+|---|---|
+| Valid JSON object | Accepted. |
+| A single JSON object wrapped in prose | **Recovered** deterministically (no extra model call). |
+| Empty / null / non-JSON body | **Recovered** via one bounded corrective reprompt, if it then yields an object. |
+| Valid JSON that is **not** an object (array/scalar) | **Halted** immediately (`model_error`), no reprompt. |
+| Unreadable provider response shape | **Halted** immediately (`model_error`), no reprompt. |
+| Still no usable object **after** the one reprompt | **Halted** (`model_error`) with a bounded excerpt. |
+
+The loop side of the same boundary (the tool-call and final-answer turns) is in
+[Agentic tool loop](/guide/agentic-tool-loop). A tool-loop step is never re-run
+wholesale, because replaying a loop could replay tool side effects; its single reprompt
+is one extra model turn on the same session, bounded by `max_llm_calls`.
 
 **Model+tools loops fall back safely.** A model+tools agent resolves through the same
 runtime. Provider failure *before any tool call* may try the next model; once a tool

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `RunResult.audit_trace` now records a per-step `reprompts` count (`0` or `1`) — how
+  many bounded corrective structured-output reprompts a step's model turn took. It is
+  rendered in `audit_trace.legible()` (`; reprompts: 1`) and emitted on the step's
+  `invoke_agent` span as `drawbore.structured_output.reprompts`, so a corrective reprompt
+  is visible to a compliance reader and in telemetry.
+
+### Changed
+- Every model turn — a one-shot final answer, a tool-loop final answer, and a tool-loop
+  tool-call turn — now passes through one structured-output boundary with three stages:
+  deterministic extraction of a usable JSON object, at most one bounded corrective
+  reprompt, then halt `model_error` with a bounded excerpt. The recovered-vs-halted
+  contract is documented in the agentic tool loop and production LLM gateway guides.
+- A one-shot model step (a model agent with no tools) now **recovers a single JSON object
+  wrapped in prose** by extracting it deterministically (a pure re-parse, no extra model
+  call) — previously it rejected prose-wrapped JSON. Its single re-attempt on an empty /
+  null / non-JSON body is now a **corrective reprompt** (it re-asks for a single JSON
+  object) rather than a blind re-call. Structural mismatches (a response of the wrong
+  shape, or valid JSON that is not an object) still fail closed immediately with no
+  reprompt, and the single-reprompt bound and halt-and-escalate are unchanged.
+
+### Fixed
+- A model+tools tool-loop step now reprompts **once** when its final answer parses as a
+  JSON object but fails the agent's output schema (for example a single missing required
+  field) — the reprompt is seeded with the exact field errors — before halting. Previously
+  a schema-invalid final answer halted `schema_violation` with no chance to correct. If the
+  corrected answer is still schema-invalid the step halts `schema_violation` as before (the
+  schema gate is never weakened — one corrective chance, then it stands). This reprompt
+  shares the single per-turn budget with the prose-recovery reprompt, so a stuck turn never
+  gets two reprompts. Documented in the agentic tool loop guide.
+
 ## [0.4.2] - 2026-06-12
 
 ### Fixed

@@ -23,7 +23,7 @@ from drawbore.evidence import (
 )
 from drawbore.observability import genai_span, payload_hash, semconv
 from drawbore.orchestration import StepExecution, ToolLoopBundle
-from drawbore.schema import validate
+from drawbore.schema import render_schema_errors, validate
 from drawbore.schema.errors import SchemaValidationError
 from drawbore.tools import (
     RunContext,
@@ -33,16 +33,6 @@ from drawbore.tools import (
 )
 
 from .outcome import Halt, Ok, Outcome, StepAudit
-
-
-def _render_schema_errors(errors: list[dict]) -> str:
-    """Render Pydantic error dicts as a regulator-readable summary
-    ("field: message; ..."), never a raw dict dump with error URLs."""
-    parts = []
-    for e in errors:
-        loc = ".".join(str(p) for p in e.get("loc", ())) or "(root)"
-        parts.append(f"{loc}: {e.get('msg', 'invalid')}")
-    return "; ".join(parts) if parts else "validation failed"
 
 
 def _passthrough_after_invalid(decision):
@@ -88,7 +78,7 @@ class StepExecutor:
             validated_in = validate(spec.input, payload)
         except SchemaValidationError as exc:
             return Halt(
-                reason=f"schema_violation: input: {_render_schema_errors(exc.errors)}",
+                reason=f"schema_violation: input: {render_schema_errors(exc.errors)}",
                 received=payload, attempted=None, audit=StepAudit(input_hash=None),
                 code="schema_violation",
             )
@@ -169,6 +159,10 @@ class StepExecutor:
         try:
             with genai_span(semconv.OP_INVOKE_AGENT, name, agent_attrs) as span:
                 raw = await self._engine.run_step(spec, model_in, tools=tools, tool_loop=tool_loop)
+                if isinstance(raw, StepExecution) and raw.reprompts:
+                    span.set_attribute(
+                        semconv.DRAWBORE_STRUCTURED_OUTPUT_REPROMPTS, raw.reprompts
+                    )
                 span.set_status(Status(StatusCode.OK))
         except Exception as exc:
             code = halt_reason_for(exc)
@@ -191,10 +185,11 @@ class StepExecutor:
         except SchemaValidationError as exc:
             tool_calls = self._tool_calls_since(tool_log_start)
             return Halt(
-                reason=f"schema_violation: output: {_render_schema_errors(exc.errors)}",
+                reason=f"schema_violation: output: {render_schema_errors(exc.errors)}",
                 received=validated_in, attempted=execution.output,
                 audit=StepAudit(input_hash=input_hash, tool_calls=tool_calls,
-                                model_turns=execution.model_turns),
+                                model_turns=execution.model_turns,
+                                reprompts=execution.reprompts),
                 code="schema_violation",
             )
 
@@ -206,6 +201,7 @@ class StepExecutor:
                 input_hash=input_hash, tool_calls=tool_calls,
                 evidence_summary=evidence_summary,
                 model_audit=execution.model_audit, model_turns=execution.model_turns,
+                reprompts=execution.reprompts,
                 tokens=execution.usage, cost=execution.cost,
             ),
         )

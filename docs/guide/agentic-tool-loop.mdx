@@ -47,18 +47,40 @@ traced and audited. The model never gets to route around a control:
   the final answer holds exactly one top-level JSON object, Drawbore extracts it
   deterministically and the step proceeds — a pure re-parse of what the model already
   said, so no tool is re-invoked.
-- **A turn that narrates a tool call earns one reprompt** — sometimes a model returns
-  prose describing what it intends to do ("I will call `lookup` with …") instead of
-  emitting a structured tool call, or returns prose with no usable JSON answer. Drawbore
-  never parses or executes a tool out of that prose — a tool runs only when the model
-  emits a real structured call. Instead, it reprompts the **same** model **once**,
-  asking it to respond with either a structured tool call or a single JSON answer and
-  nothing else; the corrected turn then continues the normal loop. The reprompt is a
-  pure model turn (it counts against `max_llm_calls` and never replays a tool side
-  effect) and happens **at most once per stuck turn**. If the reprompt still yields
-  neither a tool call nor valid JSON — or if the content holds more than one (ambiguous)
-  top-level object — the step fails closed and halts `model_error` with a bounded excerpt
-  of the offending content; Drawbore never guesses which object to trust.
+- **A stuck turn earns one reprompt.** A loop turn passes through the same
+  [structured-output boundary](/guide/production-llm-gateway) as a one-shot answer.
+  Sometimes a model returns prose describing what it intends to do ("I will call
+  `lookup` with …") instead of emitting a structured tool call, or returns prose with no
+  usable JSON answer. Drawbore never parses or executes a tool out of that prose — a tool
+  runs only when the model emits a real structured call. Instead it reprompts the
+  **same** model **once** on the same session, asking it to respond with either a
+  structured tool call or a single JSON answer and nothing else; the corrected turn then
+  continues the normal loop. The reprompt is a pure model turn (it counts against
+  `max_llm_calls` and never replays a tool side effect) and happens **at most once per
+  stuck turn**.
+- **A final answer that misses your schema earns the same one reprompt.** When the
+  final answer parses as a JSON object but fails the agent's output schema (for example a
+  missing required field), Drawbore reprompts **once** — seeded with the exact field
+  errors — before halting. If the corrected answer is still schema-invalid, the step
+  halts `schema_violation` (the schema gate is never weakened — you get one corrective
+  chance, then it stands). This reprompt shares the single per-turn budget with the
+  prose case above: a turn never gets two reprompts.
+
+When a reprompt happens it is visible on the audit trail: `RunResult`'s `audit_trace`
+records a per-step `reprompts` count (`0` or `1`), and the step's `invoke_agent` span
+carries `drawbore.structured_output.reprompts`.
+
+The loop side of the recovered-vs-halted contract:
+
+| Model behaviour | Outcome |
+|---|---|
+| Valid JSON object matching your schema | Accepted. |
+| A single JSON object wrapped in prose | **Recovered** deterministically (no extra model call). |
+| Prose with no usable tool call or JSON answer (a *narrated* tool call) | **Recovered** via one bounded reprompt, if it then yields a structured call or a JSON object; the narrated call is **never** executed. |
+| A JSON object that fails your output schema | **Recovered** via one bounded reprompt seeded with the field errors, if the corrected answer matches; otherwise **halted** `schema_violation`. |
+| Valid JSON that is **not** an object (array/scalar) | **Halted** immediately (`model_error`), no reprompt. |
+| Zero or still-ambiguous (more than one) objects **after** the one reprompt | **Halted** (`model_error`) with a bounded excerpt; Drawbore never guesses which object to trust. |
+| No model budget (`max_llm_calls`) remaining | **Halted** without reprompting. |
 
 The number of model turns and every tool call are in the audit trail:
 

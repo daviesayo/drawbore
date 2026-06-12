@@ -50,6 +50,7 @@ class AuditRecorder:
         tool_calls: tuple[str, ...],
         evidence: str | None = None,
         model_turns: int = 0,
+        reprompts: int = 0,
         model: "ModelAudit | None" = None,
         condition: str | None = None,
         node_kind: str = "agent",
@@ -64,8 +65,8 @@ class AuditRecorder:
                 index=index, agent=agent, version=version, agent_id=agent_id,
                 status="ok", input_hash=input_hash, output_hash=output_hash,
                 tool_calls=tuple(tool_calls), reason=None, evidence=evidence,
-                model_turns=model_turns, model=model, condition=condition,
-                node_kind=node_kind, join=join,
+                model_turns=model_turns, reprompts=reprompts, model=model,
+                condition=condition, node_kind=node_kind, join=join,
             )
         )
         self._step_metrics.append(
@@ -86,6 +87,7 @@ class AuditRecorder:
         tool_calls: tuple[str, ...],
         reason: str,
         model_turns: int = 0,
+        reprompts: int = 0,
         model: "ModelAudit | None" = None,
         duration_seconds: float | None = None,
         tokens: "TokenUsage | None" = None,
@@ -99,7 +101,7 @@ class AuditRecorder:
                 index=index, agent=agent, version=version, agent_id=agent_id,
                 status="failed", input_hash=input_hash, output_hash=None,
                 tool_calls=tuple(tool_calls), reason=reason, model_turns=model_turns,
-                model=model,
+                reprompts=reprompts, model=model,
             )
         )
         self._step_metrics.append(

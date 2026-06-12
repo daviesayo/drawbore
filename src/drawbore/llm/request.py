@@ -33,7 +33,9 @@ class ModelResponse:
     carries the provider-attempt summary when produced by the runtime
     (``None`` on the gateway-only path). ``usage`` is the call's token counts and
     ``cost`` the provider-reported cost — each ``None`` when the provider does not
-    report it (never fabricated)."""
+    report it (never fabricated). ``reprompts`` is how many bounded corrective
+    structured-output reprompts the call took (0 or 1), surfaced to the audit trail.
+    """
 
     output: dict
     model_used: str
@@ -41,3 +43,4 @@ class ModelResponse:
     audit: ModelAudit | None = None
     usage: TokenUsage | None = None
     cost: float | None = None
+    reprompts: int = 0

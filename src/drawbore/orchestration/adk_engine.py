@@ -115,7 +115,7 @@ class ADKEngine(OrchestratorEngine):
             )
             return StepExecution(
                 output=result.output, model_audit=result.model_audit,
-                model_turns=result.model_turns,
+                model_turns=result.model_turns, reprompts=result.reprompts,
             )
 
         # One-shot model agent: the runtime resolves the chain and walks provider
@@ -130,5 +130,5 @@ class ADKEngine(OrchestratorEngine):
             span.set_attribute(semconv.GEN_AI_RESPONSE_MODEL, response.model_used)
         return StepExecution(
             output=response.output, model_audit=response.audit, model_turns=1,
-            usage=response.usage, cost=response.cost,
+            usage=response.usage, cost=response.cost, reprompts=response.reprompts,
         )

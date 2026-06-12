@@ -102,14 +102,17 @@ class StepExecution:
     summary (None for deterministic steps); ``model_turns`` is the model-turn count
     (0 deterministic, 1 one-shot, len(turns) for a loop). ``usage`` and ``cost`` carry
     the call's token counts and provider-reported cost (each None when the engine path
-    or provider does not report them). The pipeline normalizes a raw (non-StepExecution)
-    return to ``StepExecution(output=value)`` for backward compatibility."""
+    or provider does not report them). ``reprompts`` is how many bounded corrective
+    structured-output reprompts the turn took (0 or 1). The pipeline normalizes a raw
+    (non-StepExecution) return to ``StepExecution(output=value)`` for backward
+    compatibility."""
 
     output: Any
     model_audit: ModelAudit | None = None
     model_turns: int = 0
     usage: "TokenUsage | None" = None
     cost: float | None = None
+    reprompts: int = 0
 
 
 class OrchestratorEngine(ABC):

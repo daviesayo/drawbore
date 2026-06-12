@@ -12,7 +12,6 @@ with the tool error (never a provider fallback)."""
 
 from __future__ import annotations
 
-import json
 import logging as _logging
 import uuid
 from dataclasses import dataclass
@@ -43,11 +42,13 @@ from drawbore.llm import (
     ModelAudit,
     ModelUnavailableError,
     build_model_request,
-    content_excerpt,
     resolve_model_chain,
 )
 from drawbore.llm.classify import classify_provider_exception
 from drawbore.llm.resolution import ResolvedModelChain
+from drawbore.llm.structured_output import coerce_structured_output
+from drawbore.schema import render_schema_errors, validate
+from drawbore.schema.errors import SchemaValidationError
 from drawbore.tools.errors import ToolAccessError
 
 from .adk_tools import (
@@ -60,20 +61,18 @@ from .engine import ToolLoopBundle, provider_safe_tool_aliases
 _APP = "drawbore"
 
 
-def _reprompt_text(aliases: dict[str, str]) -> str:
-    """The single bounded reprompt sent when a turn returns prose instead of a
-    structured tool call or a JSON answer. It asks the model to respond with EITHER a
-    structured tool call OR the final JSON object and nothing else — it never parses or
-    executes anything out of the prose; the model must emit a real structured tool call
-    for any tool to run. The declared tool names are restated to steer the next turn."""
-    names = ", ".join(sorted(aliases.values()))
-    tool_clause = f" The available tools are: {names}." if names else ""
-    return (
-        "Your previous message was prose and contained neither a structured tool call "
-        "nor a final answer. Respond now with EITHER a single structured tool call OR "
-        "the final answer as one JSON object, and nothing else — do not narrate, "
-        f"explain, or add any text outside the JSON.{tool_clause}"
-    )
+@dataclass
+class LoopBudget:
+    """Whether the loop still has model-turn budget for the single bounded re-ask.
+    ``remaining = max_llm_calls - len(turns)`` read live (``turns`` is the loop's
+    mutable per-attempt turn accumulator), so the budget reflects turns consumed so
+    far. The structured-output driver additionally caps reprompts at one."""
+
+    max_llm_calls: int
+    turns: list
+
+    def can_reask(self) -> bool:
+        return (self.max_llm_calls - len(self.turns)) >= 1
 
 
 @dataclass(frozen=True)
@@ -81,11 +80,13 @@ class LoopResult:
     """The result of an agentic loop run over a (possibly multi-attempt) chain.
     ``output`` is the model's final JSON (the pipeline validates it); ``model_audit``
     carries the provider-attempt summary; ``model_turns`` is the model-turn count of
-    the winning attempt."""
+    the winning attempt; ``reprompts`` is how many bounded corrective structured-output
+    reprompts the winning attempt took (0 or 1)."""
 
     output: dict
     model_audit: ModelAudit
     model_turns: int
+    reprompts: int = 0
 
 
 async def _run_one_attempt(
@@ -97,21 +98,24 @@ async def _run_one_attempt(
     model: str,
     model_factory: Callable[[str], Any],
     max_llm_calls: int,
-) -> tuple[dict, int]:
+) -> tuple[dict, int, int]:
     """Run a loop attempt on one concrete ``model`` and return
-    ``(output_dict, model_turns)``. ``output_dict`` is the model's final JSON (the
-    pipeline validates it). Raises the captured tool failure (immediate abort) or
-    ``LLMError`` on non-JSON / loop exhaustion. The chain driver calls this once per
-    provider attempt.
+    ``(output_dict, model_turns, reprompts)``. ``output_dict`` is the model's final
+    JSON (the pipeline validates it). Raises the captured tool failure (immediate
+    abort) or ``LLMError`` on an unusable final answer / loop exhaustion. The chain
+    driver calls this once per provider attempt.
 
-    Within the attempt the model gets at most ONE bounded reprompt: when a turn returns
-    prose with no usable tool call or JSON answer (a model that narrates a tool call
-    rather than emitting one is indistinguishable from a malformed final answer — both
-    surface as non-JSON text), Drawbore re-asks the SAME model on the SAME session for a
-    structured tool call or a JSON object. It never parses or executes a tool out of the
-    prose; a tool runs only if the model emits a real structured call. The reprompt is
-    bounded by the remaining ``max_llm_calls`` budget and happens exactly once — if it
-    still yields neither a tool call nor valid JSON, the attempt halts ``model_error``."""
+    The first pass produces final text; the shared structured-output boundary then
+    extracts a usable JSON object, allowing at most ONE bounded corrective reprompt on
+    the SAME session before failing closed. Two recovery cases share that single
+    budget: (1) the turn returned prose with no usable tool call or JSON answer (a
+    narrated tool call is indistinguishable from a malformed answer — both surface as
+    non-JSON text; Drawbore never parses or executes a tool out of prose, it re-asks
+    for a structured response), and (2) the answer parsed as an object but failed the
+    agent's output schema (the re-ask is seeded with the field errors). After the one
+    re-ask, an object that still fails the schema is RETURNED so the pipeline's
+    authoritative output-schema gate halts ``schema_violation``; an answer that is
+    still not a usable object halts ``model_error``."""
     request = build_model_request(spec, payload, model_chain=(model,))
 
     # Expose each declared tool to the model under a provider-safe ALIAS (a function
@@ -149,30 +153,35 @@ async def _run_one_attempt(
         spec, runner, run_id=run_id, session_id=session_id, message=message,
         tool_loop=tool_loop, max_llm_calls=max_llm_calls,
     )
-    status, value = _parse_loop_final(spec, final_text)
-    if status == "ok":
-        return value, len(tool_loop.turns)
 
-    # status == "reprompt": the turn returned prose with no usable tool call or JSON
-    # answer (a turn that narrates a tool call instead of emitting one looks identical to
-    # a malformed final answer — both surface as non-JSON text). Drawbore does NOT parse
-    # the narrated call out of prose; it reprompts ONCE for a structured response. The
-    # reprompt is a pure MODEL turn on the same session — no tool runs unless the model
-    # emits a real structured call — and it is bounded by the remaining model-turn budget.
-    remaining = max_llm_calls - len(tool_loop.turns)
-    if remaining < 1:
-        raise _narrated_halt(spec, final_text, value)  # no budget left — fail closed
-    reprompt = types.Content(role="user", parts=[types.Part(text=_reprompt_text(aliases))])
-    final_text = await _consume_pass(
-        spec, runner, run_id=run_id, session_id=session_id, message=reprompt,
-        tool_loop=tool_loop, max_llm_calls=remaining,
+    async def _reask(hint: str) -> object:
+        # ONE more pass on the SAME session/runner for continuity, bounded by the
+        # remaining model-turn budget. A pure model turn: no tool runs unless the model
+        # emits a real structured call.
+        remaining = max_llm_calls - len(tool_loop.turns)
+        reprompt = types.Content(role="user", parts=[types.Part(text=hint)])
+        return await _consume_pass(
+            spec, runner, run_id=run_id, session_id=session_id, message=reprompt,
+            tool_loop=tool_loop, max_llm_calls=remaining,
+        )
+
+    def _validate_object(obj: dict) -> str | None:
+        # The reprompt-decision check: report the agent's output-schema errors so a
+        # schema-invalid answer earns one corrective re-ask. This never replaces the
+        # pipeline's authoritative post-step output-schema gate — a still-invalid
+        # answer is returned for that gate to halt ``schema_violation``.
+        try:
+            validate(spec.output, obj)
+            return None
+        except SchemaValidationError as exc:
+            return render_schema_errors(exc.errors)
+
+    coerced = await coerce_structured_output(
+        agent=spec.name, initial_text=final_text, reask=_reask,
+        budget=LoopBudget(max_llm_calls, tool_loop.turns),
+        tool_names=tuple(aliases.values()), validate_object=_validate_object,
     )
-    status, value = _parse_loop_final(spec, final_text)
-    if status == "ok":
-        return value, len(tool_loop.turns)
-    # Still prose after the single bounded reprompt — fail closed (model_error). Recovery
-    # is exactly one reprompt; the loop never reprompts again.
-    raise _narrated_halt(spec, final_text, value)
+    return coerced.value, len(tool_loop.turns), coerced.reprompts
 
 
 async def _consume_pass(
@@ -233,52 +242,6 @@ async def _consume_pass(
     return final_text
 
 
-def _parse_loop_final(spec: AgentSpec, final_text: str | None) -> tuple[str, Any]:
-    """Classify the loop pass's final text. Returns one of:
-
-      ``("ok", dict)``    — the final answer parsed as a JSON object, or was recovered by
-                            the deterministic sole-top-level-object extraction (a pure
-                            re-parse of content the model already produced — it invokes no
-                            tool and makes no further model call).
-      ``("reprompt", exc)`` — the content is prose that is not a JSON object and holds
-                            zero, or more than one (ambiguous), top-level object; the model
-                            narrated instead of emitting a tool call or a JSON answer. The
-                            caller may issue ONE bounded reprompt before failing closed.
-
-    Raises ``LLMError`` for the failures that are NOT reprompt-recoverable: no final
-    response (loop-call exhaustion) and valid JSON that is not an object."""
-    if final_text is None:
-        raise LLMError(
-            f"agentic loop for agent '{spec.name}' produced no final response "
-            f"(possible loop-call limit reached)"
-        )
-    try:
-        output = json.loads(final_text)
-    except (json.JSONDecodeError, TypeError) as exc:
-        recovered = _sole_top_level_json_object(final_text)
-        if recovered is not None:
-            return "ok", recovered
-        return "reprompt", exc
-    if not isinstance(output, dict):
-        raise LLMError(
-            f"agent '{spec.name}' loop returned JSON that is not an object: {type(output).__name__}"
-        )
-    return "ok", output
-
-
-def _narrated_halt(spec: AgentSpec, final_text: str | None, exc: Exception) -> LLMError:
-    """The ``model_error`` for a loop that returned prose with no usable tool call or JSON
-    answer even after the single bounded reprompt. The reason names the narration (so an
-    operator knows the model described a call instead of emitting one) and carries a
-    bounded excerpt of the offending content for diagnosis from the halt reason / audit."""
-    return LLMError(
-        f"agent '{spec.name}' loop returned prose with no tool call or JSON answer "
-        f"(the model narrated instead of emitting a structured tool call); a single "
-        f"reprompt for a structured response also failed: {exc} "
-        f"(content excerpt: {content_excerpt(final_text)})"
-    )
-
-
 async def run_agentic_loop(
     spec: AgentSpec,
     payload: Any,
@@ -293,16 +256,19 @@ async def run_agentic_loop(
     failure (immediate abort) or ``LLMError`` on non-JSON / loop exhaustion. New
     code should use ``run_agentic_loop_chain``; the engine does.
 
-    This compat wrapper ensures a raw ADK error (e.g. loop exhaustion) surfaces as
-    an ``LLMError``. ``_run_one_attempt`` re-raises the raw provider/ADK exception
-    so the chain driver can classify it; here, where there is no chain to fall back
-    on, any non-tool, non-``LLMError`` exception is wrapped."""
+    Returns ``(output_dict, model_turns)`` (the reprompt count is carried by the chain
+    driver's ``LoopResult``, not this compat tuple). This compat wrapper ensures a raw
+    ADK error (e.g. loop exhaustion) surfaces as an ``LLMError``. ``_run_one_attempt``
+    re-raises the raw provider/ADK exception so the chain driver can classify it; here,
+    where there is no chain to fall back on, any non-tool, non-``LLMError`` exception is
+    wrapped."""
     chain = resolve_model_chain(spec)            # primary first; fallback rejected upstream
     try:
-        return await _run_one_attempt(
+        output, turns, _reprompts = await _run_one_attempt(
             spec, payload, tool_loop=tool_loop, run_id=run_id, model=chain[0],
             model_factory=model_factory, max_llm_calls=max_llm_calls,
         )
+        return output, turns
     except LLMError:
         raise                                    # already legible (non-JSON / exhaustion / multicall)
     except Exception as exc:
@@ -335,7 +301,7 @@ async def run_agentic_loop_chain(
         tool_loop.failures.clear()
         tool_loop.tool_invoked.clear()
         try:
-            output, turns = await _run_one_attempt(
+            output, turns, reprompts = await _run_one_attempt(
                 spec, payload, tool_loop=tool_loop, run_id=run_id,
                 model=attempt.request_model, model_factory=model_factory,
                 max_llm_calls=max_llm_calls,
@@ -418,6 +384,7 @@ async def run_agentic_loop_chain(
                     loop_fallback_phase=("before_tools" if i > 0 else "not_loop"),
                 ),
                 model_turns=turns,
+                reprompts=reprompts,
             )
     # Defensive: only reached if ``chain.attempts`` is empty, which ``ResolvedModelChain``
     # guarantees against (it always carries at least one attempt). Each real attempt either
@@ -433,65 +400,6 @@ def _loop_attempt_audit(index, attempt, outcome, *, reason=None) -> ModelAttempt
         provider=attempt.provider, model=attempt.model,
         request_model=attempt.request_model, outcome=outcome, reason=reason,
     )
-
-
-def _sole_top_level_json_object(text: object) -> dict | None:
-    """Deterministically recover a single top-level JSON OBJECT from prose-wrapped
-    final-answer content.
-
-    Returns the object iff EXACTLY ONE balanced top-level ``{...}`` span parses as a
-    JSON object; returns ``None`` (fail closed) when the content is not a string,
-    holds no such object, or holds more than one (ambiguous — there is no safe way to
-    choose which to trust). Pure and bounded: a single left-to-right scan, no tool
-    call, no model call, no side effect, so it is safe to run after tools have
-    executed."""
-    if not isinstance(text, str):
-        return None
-    found: list[dict] = []
-    i, n = 0, len(text)
-    while i < n:
-        if text[i] == "{":
-            end = _matching_brace(text, i)
-            if end != -1:
-                try:
-                    value = json.loads(text[i:end])
-                except ValueError:
-                    value = None
-                if isinstance(value, dict):
-                    found.append(value)
-                    if len(found) > 1:
-                        return None      # ambiguous: more than one top-level object
-                i = end                  # skip the whole span (never descend into nested)
-                continue
-        i += 1
-    return found[0] if len(found) == 1 else None
-
-
-def _matching_brace(s: str, start: int) -> int:
-    """Index just past the ``}`` that balances the ``{`` at ``start``, honouring JSON
-    string literals and escapes so braces inside strings do not miscount; ``-1`` when
-    the brace is unbalanced."""
-    depth = 0
-    in_str = False
-    escaped = False
-    for j in range(start, len(s)):
-        c = s[j]
-        if in_str:
-            if escaped:
-                escaped = False
-            elif c == "\\":
-                escaped = True
-            elif c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return j + 1
-    return -1
 
 
 def _schema_of(registry, ref: str):

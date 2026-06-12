@@ -30,6 +30,7 @@ class StepAudit:
     evidence_summary: str | None = None
     model_audit: ModelAudit | None = None
     model_turns: int = 0
+    reprompts: int = 0
     tokens: "TokenUsage | None" = None
     cost: float | None = None
 

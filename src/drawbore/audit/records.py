@@ -33,6 +33,7 @@ class StepAuditRecord:
     reason: str | None = None
     evidence: str | None = None
     model_turns: int = 0
+    reprompts: int = 0
     model: "ModelAudit | None" = None
     condition: str | None = None
     node_kind: str = "agent"
@@ -90,6 +91,8 @@ class AuditRecord:
                 line += f"; {s.model.legible()}"
             if s.model_turns:
                 line += f"; turns: {s.model_turns}"
+            if s.reprompts:
+                line += f"; reprompts: {s.reprompts}"
             if s.join is not None:
                 line += f"; join {s.join}"
             if s.status != "ok" and s.reason is not None:
