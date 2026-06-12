@@ -105,5 +105,7 @@ HALT_CODES: tuple[str, ...] = (
     "confidence_marker_without_value",
     "confidence_below_threshold",
     "requires_human_approval",
+    "approval_rejected",
+    "approval_error",
     "resume_drift",
 )
