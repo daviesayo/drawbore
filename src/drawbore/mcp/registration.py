@@ -9,10 +9,13 @@ registering a server does NOT expose its other tools.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .client import MCPClient, MCPServerConfig
 from .errors import MCPToolNotFoundError
+
+if TYPE_CHECKING:
+    from ..tools.taint import TrustLabel
 
 
 def _make_handler(
@@ -38,6 +41,8 @@ async def register_mcp_server(
     allowed_tools: Iterable[str],
     auth=None,
     client: MCPClient,
+    source_trust: "Mapping[str, TrustLabel] | None" = None,
+    exfil_capable: Mapping[str, bool] | None = None,
 ) -> tuple[str, ...]:
     """Connect to the MCP server (server-level auth), validate each declared tool
     exists, and register ONLY those tools into ``registry`` as proxy-backed
@@ -47,7 +52,29 @@ async def register_mcp_server(
     declare is never registered, so an agent can never reach it — even though the
     server would permit it. A declared tool the server does NOT advertise raises
     :class:`MCPToolNotFoundError` (cannot scope to a phantom tool).
+
+    Per-tool trust declarations: ``source_trust`` and ``exfil_capable`` are
+    optional maps keyed by tool name (a name in ``allowed_tools``). They let an MCP
+    tool participate in the taint gate with the same honesty as a custom tool — an
+    outward-writing MCP tool (a notifier, an email relay) declared
+    ``exfil_capable={"notify": True}`` is refused while the step's data is
+    untrusted. A tool absent from a map keeps the fail-safe MCP default:
+    untrusted-source and not exfil-capable. A flag keyed to a tool that is not in
+    ``allowed_tools`` raises :class:`ValueError` (cannot scope a flag to a tool the
+    agent can never reach), before the server is contacted.
     """
+    declared = tuple(allowed_tools)
+    declared_set = set(declared)
+    source_trust = dict(source_trust or {})
+    exfil_capable = dict(exfil_capable or {})
+    for flag_name, mapping in (("source_trust", source_trust), ("exfil_capable", exfil_capable)):
+        phantom = set(mapping) - declared_set
+        if phantom:
+            raise ValueError(
+                f"{flag_name} declares tool(s) not in allowed_tools for MCP server "
+                f"'{name}': {sorted(phantom)} (allowed: {sorted(declared_set)})"
+            )
+
     server = MCPServerConfig(name=name, url=url, auth=auth)
     session = await client.connect(server)            # server-level auth happens here
     # On any failure after connect (e.g. a phantom declared tool), close the
@@ -57,7 +84,7 @@ async def register_mcp_server(
         advertised = {spec.name: spec for spec in await client.list_tools(session)}
 
         refs: list[str] = []
-        for tool_name in allowed_tools:
+        for tool_name in declared:
             spec = advertised.get(tool_name)
             if spec is None:
                 raise MCPToolNotFoundError(
@@ -65,10 +92,20 @@ async def register_mcp_server(
                     f"(advertised: {sorted(advertised)})"
                 )
             ref = f"mcp://{name}/{tool_name}"
+            # Default fail-safe: register_mcp_tool's own defaults (UNTRUSTED source,
+            # not exfil-capable) apply unless the caller declared otherwise. Pass a
+            # flag only when present so the registry default is the single source of
+            # the fail-safe.
+            extra: dict[str, Any] = {}
+            if tool_name in source_trust:
+                extra["source_trust"] = source_trust[tool_name]
+            if tool_name in exfil_capable:
+                extra["exfil_capable"] = exfil_capable[tool_name]
             registry.register_mcp_tool(
                 ref,
                 _make_handler(client, session, name, tool_name),
                 schema=spec.input_schema,
+                **extra,
             )
             refs.append(ref)
     except BaseException:

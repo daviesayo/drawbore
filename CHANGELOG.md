@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile-bound pipeline halted `model_config_error` before the attack was
   provoked. As in all of test mode, the profile resolves against the credential
   checker and no provider is called.
+- `register_mcp_server` now accepts optional per-tool `source_trust` and
+  `exfil_capable` maps (keyed by tool name), so an outward-writing MCP tool — a
+  notifier, an email relay — can be declared exfil-capable through the public MCP
+  path and is then refused by the taint sink-gate exactly like a custom
+  `register_tool(..., exfil_capable=True)`. A tool you do not name keeps the
+  fail-safe default (untrusted-source, not a sink); a flag keyed to a tool not in
+  `allowed_tools` raises `ValueError`. Documented in the MCP tools and taint-and-trust
+  guides.
 
 ### Fixed
 - The LLM gateway now silences the underlying provider SDK's unsolicited debug
