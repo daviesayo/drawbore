@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The LLM gateway now silences the underlying provider SDK's unsolicited debug
+  printing (e.g. the repeated "Provider List" pointer it writes to stdout around
+  failing model attempts), so run output stays clean. Callers no longer need to
+  import the provider SDK and set its debug flag themselves. This affects only
+  the provider SDK's own debug prints; no safety, audit, or observability signal
+  is suppressed.
+
 ## [0.2.0] - 2026-06-11
 
 ### Added
