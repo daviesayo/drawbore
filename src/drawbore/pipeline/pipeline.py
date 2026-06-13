@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Collection, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping
 
 from pydantic import BaseModel
 
@@ -60,6 +60,9 @@ from .conditions import When
 from .executor import StepExecutor
 from .outcome import Halt
 
+if TYPE_CHECKING:
+    from drawbore.confinement import ConfinementReceipt
+
 
 # Closed mapping from a pending approval request's reason to the halt code a
 # decision-less poll reports for it. CLOSED + fail-closed: a reason not listed
@@ -94,6 +97,7 @@ class RunResult:
     resume_ledger: "ResumeLedger | None" = None
     metrics: "RunMetrics | None" = None
     approval_request: "ApprovalRequest | None" = None
+    confinement_receipt: "ConfinementReceipt | None" = None
 
 
 class Pipeline:
@@ -475,6 +479,39 @@ class Pipeline:
                 result.run_id = resolved_run_id
                 result.resume_ledger = ledger_builder.build()
                 result.metrics = recorder.build_metrics()
+                # Mint a confinement receipt on every exit path (completed / halted /
+                # escalated). The footprint computation is wrapped in a broad
+                # try/except so that any to_config/effective_authority failure
+                # degrades to footprint=None (unverifiable receipt) rather than
+                # escaping run(). The mint itself is total but also guarded so a
+                # future implementation change can never surface through run().
+                from .graph import JoinNode as _JoinNode
+                _step_agents = tuple(
+                    s.agent.name if not isinstance(s, _JoinNode) else None
+                    for s in self.steps
+                )
+                try:
+                    from drawbore.config.serialization import to_config as _to_config
+                    from drawbore.config.authority import effective_authority as _eff_auth
+                    _agents_map = {
+                        s.agent.name: s.agent
+                        for s in self.steps
+                        if not isinstance(s, _JoinNode)
+                    }
+                    _footprint = _eff_auth(_to_config(self, agents=_agents_map))
+                except Exception:
+                    _footprint = None
+                try:
+                    from drawbore.confinement import mint_receipt as _mint_receipt
+                    result.confinement_receipt = _mint_receipt(
+                        run_id=resolved_run_id,
+                        run_status=result.status,
+                        proxy_log=recorder.tool_log() or [],
+                        step_agents=_step_agents,
+                        footprint=_footprint,
+                    )
+                except Exception:
+                    pass
 
     async def _run_inner(
         self,
