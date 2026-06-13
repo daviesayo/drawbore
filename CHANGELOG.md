@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Document the tool-call instrumentation seam in the tools guide: every tool call
+  (custom, MCP, and builtin) passes through the proxy, which records timing, input/output
+  hashes, and disposition, surfaced on `result.metrics.tool_calls` and as `execute_tool`
+  OTel spans. Clarify that MCP/builtin handlers are covered identically to custom ones,
+  and note the boundary: no post-registration I/O-mutating middleware hook is provided.
+
 ### Fixed
 
 - `evidence://retrieve` is now auto-bound when `evidence_store=store` is passed
