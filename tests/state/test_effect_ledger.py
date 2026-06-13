@@ -67,3 +67,26 @@ def test_runs_are_isolated():
     led = InMemoryEffectLedger()
     led.record_pending(_entry(run="a"))
     assert led.entry_at("b", 0, 0) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 3: halt codes + effect exceptions
+# ---------------------------------------------------------------------------
+
+from drawbore.state.effect_ledger import (
+    EffectDivergenceError,
+    EffectUnresolvedError,
+    EffectLedgerWriteError,
+)
+from drawbore.errors.errors import HALT_CODES, halt_reason_for
+
+
+def test_effect_halt_codes_registered():
+    for code in ("effect_divergence", "effect_unresolved", "effect_ledger_error"):
+        assert code in HALT_CODES
+
+
+def test_effect_exceptions_map_to_codes():
+    assert halt_reason_for(EffectDivergenceError("x")) == "effect_divergence"
+    assert halt_reason_for(EffectUnresolvedError("x")) == "effect_unresolved"
+    assert halt_reason_for(EffectLedgerWriteError("x")) == "effect_ledger_error"

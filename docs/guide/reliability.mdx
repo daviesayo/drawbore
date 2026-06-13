@@ -62,3 +62,19 @@ A `model_error` halt means the model returned output Drawbore cannot use after t
 [structured-output boundary](/guide/production-llm-gateway) — including its one bounded
 corrective reprompt — did not recover a usable JSON object; the reason carries a bounded
 excerpt of the offending output.
+
+An `effect_divergence` halt means that on durable resume a tool call did not match the
+recorded effect sequence at its expected position, or that recorded effects were left
+unconsumed at step end (the resumed run fired fewer effectful calls than were recorded,
+skipping an already-fired effect). The run halts for human reconciliation rather than
+risk a double-fire or silent replay gap.
+
+An `effect_unresolved` halt means that on resume the ledger found a PENDING entry — an
+effect that started but whose completion was never durably confirmed. The framework
+cannot prove the call succeeded exactly once, so it halts fail-closed. The recorded
+idempotency key lets an operator verify the outcome against the remote system before
+clearing the entry.
+
+An `effect_ledger_error` halt means a durable effect-ledger write failed. The result
+is not returned rather than risk an unrecorded effect — a result returned without a
+durable record would be invisible on the next resume, causing a silent re-fire.
