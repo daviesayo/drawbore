@@ -436,9 +436,13 @@ class Pipeline:
         outputs[name] = validated_out
         output_trust[name] = trust_value
         if checkpoints is not None:
-            checkpoints.step_succeeded(run_id, idx, validated_out)
-            checkpoints.record_trust(run_id, idx, output_trust[name])
-            checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
+            checkpoints.commit_step(
+                run_id,
+                idx,
+                output=validated_out,
+                trust=output_trust[name],
+                seal=seal_for(step.agent.spec, step.evidence, registry),
+            )
             ledger_builder.executed(idx, name, sealed=True)
         else:
             ledger_builder.executed(idx, name, sealed=False)
@@ -622,8 +626,7 @@ class Pipeline:
                 for s in self.steps
                 if not isinstance(s, JoinNode)
             ):
-                _overlay = ToolRegistry()
-                _overlay._tools.update(registry._tools)
+                _overlay = registry.clone()
                 register_evidence_tool(_overlay, store=evidence_store)
                 registry = _overlay
         # Join indices whose ledger `restored_join` entry was emitted during
@@ -806,8 +809,9 @@ class Pipeline:
                 steps_run += 1
                 ledger_builder.executed_join(idx, name)
                 if checkpoints is not None:
-                    checkpoints.step_succeeded(run_id, idx, value)
-                    checkpoints.record_trust(run_id, idx, output_trust[name])
+                    checkpoints.commit_step(
+                        run_id, idx, output=value, trust=output_trust[name]
+                    )
                 continue
 
             step = node
