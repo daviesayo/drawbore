@@ -9,9 +9,7 @@ audit FIRST, and ESCALATED is the fallback only for a confidence/approval trigge
 
 from __future__ import annotations
 
-import inspect
-
-from drawbore.tools import ToolProxy
+from drawbore.tools.proxy import DEFAULT_MAX_CALLS_PER_TOOL
 
 from ..loop import call, final, multi_call, text
 from .cases import Containment, ContainmentCase
@@ -59,8 +57,7 @@ def _verdict(result) -> "Containment | None":
     return Containment.HALTED
 
 
-# Read the breaker cap from the proxy default rather than hardcoding.
-_BREAKER_MAX: int = inspect.signature(ToolProxy.__init__).parameters["max_calls_per_tool"].default
+_BREAKER_MAX: int = DEFAULT_MAX_CALLS_PER_TOOL
 
 _BENIGN_FINAL: dict = {}            # never reached by the loop attack cases (they abort first)
 _BENIGN_TOOL_RESULT: dict = {"ok": True}
