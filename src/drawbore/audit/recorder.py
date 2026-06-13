@@ -38,6 +38,11 @@ class AuditRecorder:
         enough."""
         self._tool_log = log
 
+    def tool_log(self) -> list[dict] | None:
+        """Return the bound tool-proxy log (the same list reference passed to
+        ``bind_tool_log``), or ``None`` if no log has been bound yet."""
+        return self._tool_log
+
     def record_step(
         self,
         *,

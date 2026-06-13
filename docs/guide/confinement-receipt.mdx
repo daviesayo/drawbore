@@ -1,0 +1,185 @@
+---
+title: "Confinement receipt"
+description: "An offline, independently-verifiable attestation that a run stayed within its declared tool authority and never exfiltrated under untrusted data."
+---
+
+**When to use this:** you need to demonstrate to a regulator, auditor, or compliance
+team that a specific run was confined — not because you trust the runtime's logs, but
+because the claim can be checked independently, without re-running the pipeline and
+without trusting Drawbore. A `ConfinementReceipt` is proof, not logs or inference.
+
+A receipt is minted automatically at the end of **every** run — success or halt. It
+binds the pipeline's declared capability footprint (the set of `(agent, tool, scope)`
+facts the run was allowed to exercise) to the proxy's observed enforcement log and
+re-checks both confinement invariants offline.
+
+## Quick example
+
+```python
+import asyncio
+from drawbore.confinement import verify
+
+result = await pipeline.run(initial)
+
+receipt = result.confinement_receipt
+verdict = verify(receipt)
+print(verdict.status)          # "confined" | "breached" | "unverifiable"
+print(receipt.legible())       # regulator-readable block
+```
+
+To bind the receipt to the actual execution log, pass the proxy log as a second
+argument. Each log entry's `run_id` is also checked against the receipt's `run_id`,
+so a different run's log with otherwise identical calls is rejected:
+
+```python
+verdict = verify(receipt, result.proxy_log)
+print(verdict.status)          # re-derives the verdict from the live log
+```
+
+To bind the declared footprint to the manifest fingerprint you hold independently
+(the strongest defence against inflated `declared_facts`), pass it as a keyword
+argument:
+
+```python
+from drawbore.config.authority import effective_authority
+
+config = pipeline.to_config()
+expected_fp = effective_authority(config).fingerprint()
+verdict = verify(receipt, expected_footprint_fingerprint=expected_fp)
+```
+
+## The three verdict statuses
+
+`verify` returns a `ConfinementVerdict` with a `status` field:
+
+- **`confined`** — every executed tool call mapped to a declared capability, and no
+  exfil-capable tool fired under untrusted data. The run was contained.
+- **`breached`** — at least one executed call fell outside the declared footprint, or
+  an exfil-capable tool ran under an untrusted taint scope. `verdict.breaches` names
+  each offending call.
+- **`unverifiable`** — the evidence is insufficient to prove containment. Possible
+  causes: the footprint could not be derived, a tool call could not be attributed to
+  an agent, or the receipt's fingerprint does not match. Fail closed: insufficient
+  evidence is never treated as confined.
+
+Verdict precedence is `unverifiable > breached > confined`. A `denied:*` proxy entry
+(a scope denial, taint denial, token denial, or circuit-breaker trip) is **not** a
+breach — it is evidence a control fired, which strengthens the proof.
+
+## What `verify` proves — and what it does not
+
+`verify` offers layered tamper-detection; each layer has an honest scope.
+
+**`verify(receipt)`** re-derives the receipt's SHA-256 fingerprint from its
+embedded fields and re-evaluates the confinement invariants over the embedded
+observed calls. It detects edits that did NOT recompute the keyless fingerprint.
+It also checks that `receipt.footprint_fingerprint` is consistent with
+`receipt.declared_facts`, catching a forger who changed one without updating the
+other. It does NOT detect a fully self-consistent forgery: an adversary who
+rewrites `declared_facts`, recomputes `footprint_fingerprint` over the new facts,
+and recomputes `receipt_fingerprint` over all fields produces a receipt that passes
+`verify(receipt)` alone — because the SHA-256 algorithm is public and keyless.
+
+**`verify(receipt, proxy_log)`** additionally re-derives the observed calls from
+the live proxy log and asserts they equal the embedded calls. Each log entry's
+`run_id` is checked against `receipt.run_id`, so a different run's log with
+byte-identical calls is rejected. This proves **log binding**: the receipt matches
+the actual execution, not a substituted or redacted log.
+
+**`verify(receipt, expected_footprint_fingerprint=fp)`** additionally asserts that
+`receipt.footprint_fingerprint` equals the fingerprint the auditor holds
+independently (computed from the pipeline manifest via
+`effective_authority(config).fingerprint()`). This closes the self-consistent
+forgery gap: even if an adversary inflates `declared_facts` and recomputes all
+keyless fingerprints consistently, the inflated footprint will not match the
+manifest fingerprint derived independently.
+
+The independence is verifier-vs-runtime: an auditor re-derives the verdict from the
+evidence using the same deterministic rules that minted it, without trusting the
+runtime and without re-running the pipeline. This is the regulatory value of the
+receipt.
+
+## Honesty clause
+
+The receipt is **verifiable, not cryptographically signed**. The SHA-256
+fingerprint is keyless: it detects naive tampering and internal inconsistencies
+(such as a `footprint_fingerprint` that does not match its `declared_facts`), but
+an adversary who knows the SHA-256 algorithm — which is public — can rewrite every
+field and recompute every fingerprint to produce a self-consistent receipt that
+passes `verify(receipt)` alone. Full forgery and repudiation resistance require
+cryptographic signing (Ed25519), which is a managed-service feature, not part of
+the MIT core.
+
+For audit purposes, use `verify(receipt, proxy_log, expected_footprint_fingerprint=fp)`:
+binding to both the live execution log and the independently-held manifest
+fingerprint closes the gap that keyless SHA-256 alone leaves open.
+
+For a correctly-functioning runtime the verdict is always `confined` — the proxy
+already prevents out-of-footprint and exfil-under-untrusted-scope calls. `breached`
+surfaces a runtime defect or tampering; that is exactly what a regulatory attestation
+is meant to catch.
+
+## `run_id` and per-run identity
+
+`ConfinementReceipt.run_id` comes from the `run_id` you pass to `pipeline.run()`.
+If you do not pass one, it defaults to a non-unique `"<pipeline-name>-run"`. Pass an
+explicit unique identifier (a UUID, a request id, a job id) so each receipt has an
+independent, addressable identity:
+
+```python
+import uuid
+result = await pipeline.run(initial, run_id=str(uuid.uuid4()))
+```
+
+## Distinguishing the two `status` fields
+
+`ConfinementReceipt` and `ConfinementVerdict` each have a `status` field; they mean
+different things:
+
+- `ConfinementReceipt.status` — the **run** outcome: `"completed"`, `"halted"`, or
+  `"escalated"`.
+- `ConfinementVerdict.status` — the **confinement** verdict: `"confined"`,
+  `"breached"`, or `"unverifiable"`.
+
+A halted run (for example, a schema violation) produces a receipt with
+`status="halted"` and can still have `verdict.status="confined"` if the tool calls
+that did execute stayed within the declared footprint.
+
+## API reference
+
+**`ConfinementReceipt`** — the self-contained attestation artifact on
+`RunResult.confinement_receipt`. Always present. Fields: `run_id`, `status`
+(run status), `footprint_fingerprint` (SHA-256 of the declared capability facts),
+`declared_facts`, `step_agents`, `observed_calls`, `verdict`, `receipt_fingerprint`.
+Call `.legible()` for a regulator-readable, single-block account.
+
+**`ObservedCall`** — one proxy-log entry as the receipt records it. Fields: `step`,
+`agent`, `tool_ref`, `operation`, `match_kind` (`"tool"` / `"evidence"` / `None`),
+`result`, `taint_scope`, `exfil_capable`, `input_hash`, `output_hash`.
+`match_kind` is for legibility only; confinement matching is on `(agent, tool_ref)`.
+
+**`ConfinementVerdict`** — the confinement outcome. Fields: `status`
+(`"confined"` / `"breached"` / `"unverifiable"`), `confined` (bool, always equals
+`status == "confined"`), `breaches` (tuple of strings naming each breach),
+`unverifiable` (tuple of strings naming each unverifiable reason).
+
+**`verify(receipt, proxy_log=None, *, expected_footprint_fingerprint=None) -> ConfinementVerdict`** — offline verifier.
+Never raises; returns `unverifiable` on any error. Import from `drawbore.confinement`.
+
+- `proxy_log` — when provided, re-derives observed calls from the live log and
+  checks each entry's `run_id` against `receipt.run_id`.
+- `expected_footprint_fingerprint` — when provided, asserts that
+  `receipt.footprint_fingerprint` equals this value (e.g. from
+  `effective_authority(config).fingerprint()`), closing the self-consistent
+  keyless-forgery gap.
+
+```python
+from drawbore.confinement import verify
+```
+
+---
+
+For the declared capability footprint that the receipt checks against, see
+[Authority regression checks](/guide/authority-regression).
+For the taint invariant the receipt binds to observed enforcement, see
+[Taint and trust](/guide/taint-and-trust).

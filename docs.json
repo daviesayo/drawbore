@@ -36,7 +36,8 @@
           "docs/guide/taint-and-trust",
           "docs/guide/safety-gauntlet",
           "docs/guide/authority-regression",
-          "docs/guide/safety-ratchet"
+          "docs/guide/safety-ratchet",
+          "docs/guide/confinement-receipt"
         ]
       },
       {
