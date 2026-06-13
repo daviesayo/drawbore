@@ -100,11 +100,22 @@ class ToolContext:
         return await shim(args, operation)
 
 
+async def authorized_invoke(
+    tool_ref: str, args: Any, operation: str,
+    proxy: ToolProxy, issuer: TokenIssuer, run_ctx: RunContext,
+) -> Any:
+    """Issue a single-use token for ``tool_ref`` and route through ``proxy.invoke``.
+
+    The single authoritative issue-then-invoke sequence shared by the in-process
+    shim and the ADK proxy-backed tool. No ADK type enters this helper."""
+    token = issuer.issue(tool_ref, run_ctx.run_id, operation)
+    return await proxy.invoke(tool_ref, args, token, run_ctx, operation)
+
+
 def _make_shim(tool_ref: str, proxy: ToolProxy, issuer: TokenIssuer) -> ToolShim:
     async def shim(args: Any, operation: str = "invoke") -> Any:
         run_ctx = get_run_context()
-        token = issuer.issue(tool_ref, run_ctx.run_id, operation)
-        return await proxy.invoke(tool_ref, args, token, run_ctx, operation)
+        return await authorized_invoke(tool_ref, args, operation, proxy, issuer, run_ctx)
 
     return shim
 

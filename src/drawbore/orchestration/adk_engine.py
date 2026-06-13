@@ -16,7 +16,7 @@ from drawbore.llm import LLMError, LLMGateway, LLMRuntime
 from drawbore.llm.config import LLMRuntimeConfig
 from drawbore.observability import genai_span, semconv
 
-from .adk_loop import run_agentic_loop, run_agentic_loop_chain  # noqa: F401 (compat export)
+from .adk_loop import run_agentic_loop_chain
 from .engine import OrchestratorEngine, StepExecution, ToolLoopBundle
 
 

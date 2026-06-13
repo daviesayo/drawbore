@@ -46,7 +46,7 @@ def test_before_model_short_circuits_once_a_failure_is_recorded(captured_spans):
 
 def test_before_tool_blocks_after_a_failure_and_blocks_undeclared():
     b = _bundle(declared=("echo",))
-    cb = make_loop_before_tool_callback(b)
+    cb = make_loop_before_tool_callback(b, exposed_names=("echo",))
     assert cb(_FakeTool("echo"), {}, None) is None       # declared, no failure -> allowed
     assert isinstance(cb(_FakeTool("secret"), {}, None), dict)   # undeclared -> blocked
     b.failures.append(RuntimeError("x"))

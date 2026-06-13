@@ -12,46 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 from google.adk.models import LlmResponse
-from google.adk.tools import BaseTool, FunctionTool
+from google.adk.tools import BaseTool
 from google.genai import types
 
 from drawbore.observability import genai_span, semconv
-from drawbore.tools import RunContext, TokenIssuer, ToolProxy
+from drawbore.tools import RunContext, TokenIssuer, ToolProxy, authorized_invoke
 
 from .engine import provider_safe_tool_aliases
 
-
-def as_adk_tool(
-    tool_ref: str, *, proxy: ToolProxy, issuer: TokenIssuer, run_ctx: RunContext
-) -> FunctionTool:
-    """Wrap a declared Drawbore tool as an ADK ``FunctionTool`` whose callable
-    routes through ``proxy.invoke`` with a single-use JIT token — the SAME
-    authoritative path as the in-process tool shim."""
-
-    async def _shim(**kwargs: Any) -> Any:
-        # EXACT same authoritative path as the in-process shim in tools/access.py:
-        # issue a single-use token, then call proxy.invoke. The model's named
-        # arguments arrive as kwargs and become the single args object passed to the
-        # proxy. ``run_ctx`` is passed explicitly (not read from the contextvar)
-        # because ADK may invoke the tool where the contextvar is not propagated.
-        token = issuer.issue(tool_ref, run_ctx.run_id, "invoke")
-        return await proxy.invoke(tool_ref, kwargs, token, run_ctx, "invoke")
-
-    _shim.__name__ = tool_ref
-    return FunctionTool(func=_shim)
-
-
-def make_before_tool_callback(declared: tuple[str, ...]):
-    """Return an ADK ``before_tool_callback`` that hard-blocks any tool not in the
-    agent's declared set (the second, independent guardrail). Returning a dict skips
-    the tool; returning ``None`` lets the proxy-backed call proceed."""
-
-    def _callback(tool, args, tool_context) -> dict | None:
-        if tool.name not in declared:
-            return {"error": f"tool '{tool.name}' is not declared for this agent"}
-        return None
-
-    return _callback
 
 
 _GENAI_TYPE = {
@@ -115,14 +83,12 @@ class _ProxyBackedTool(BaseTool):
         )
 
     async def run_async(self, *, args, tool_context):
-        # EXACT same authoritative path as the in-process shim and ``as_adk_tool``:
-        # mint a single-use token, then call proxy.invoke. ``run_ctx`` is passed
+        # Same authoritative path as the in-process shim: ``run_ctx`` is passed
         # explicitly because ADK may invoke the tool where the contextvar is not
         # propagated.
         try:
-            token = self._issuer.issue(self._ref, self._run_ctx.run_id, "invoke")
-            return await self._proxy.invoke(
-                self._ref, args, token, self._run_ctx, "invoke"
+            return await authorized_invoke(
+                self._ref, args, "invoke", self._proxy, self._issuer, self._run_ctx
             )
         except Exception as exc:  # record for immediate-abort, then re-raise
             self._failures.append(exc)
@@ -176,18 +142,20 @@ def make_loop_model_callbacks(bundle, *, run_id: str):
     Signatures match ADK's ``LlmAgent`` callbacks: ``before_model(callback_context,
     llm_request) -> LlmResponse | None`` (an ``LlmResponse`` SKIPS the model call)
     and ``after_model(callback_context, llm_response) -> LlmResponse | None``."""
-    pending: list = []
+    pending_turn: bool = False
 
     def before_model(callback_context, llm_request):
+        nonlocal pending_turn
         if bundle.failures:
             return LlmResponse(content=_terminating_content())
         bundle.turns.append(1)  # one marker per model turn; count == len(turns)
-        pending.append(1)       # this turn is owed a span when it completes
+        pending_turn = True     # this turn is owed a span when it completes
         return None
 
     def after_model(callback_context, llm_response):
-        if pending:
-            pending.pop()
+        nonlocal pending_turn
+        if pending_turn:
+            pending_turn = False
             # The loop-path chat span does NOT carry drawbore.declared_model — the
             # declared-ref tag is set on the one-shot path only (adk_engine.py).
             # This callback sees only the resolved model name, not the declared ref.
@@ -205,33 +173,28 @@ def make_loop_model_callbacks(bundle, *, run_id: str):
     return before_model, after_model
 
 
-def make_loop_before_tool_callback(bundle):
+def make_loop_before_tool_callback(bundle, *, exposed_names: tuple):
     """Return a ``before_tool_callback`` that blocks any tool not in the agent's
     declared set AND blocks any tool once a failure is recorded (so no further tool
     runs after the failed control). A dict return skips the tool in ADK.
 
     Signature matches ADK: ``before_tool(tool, args, tool_context) -> dict | None``.
-    The undeclared-tool guard is delegated to ``make_before_tool_callback`` (single
-    source of truth); the loop variant adds the after-failure block and, when a
-    declared tool is about to run, marks ``bundle.tool_invoked`` so the loop
+    When a declared tool is about to run, marks ``bundle.tool_invoked`` so the loop
     driver can tell a pre-tool provider failure (may fall back) from a post-tool one
     (must fail closed). A DENIED tool (undeclared, or after a prior failure) does NOT
     mark ``tool_invoked`` — only a tool that actually proceeds counts as having run.
 
     The model sees each tool under its provider-safe ALIAS, so the undeclared guard is
-    keyed on the alias set (derived from ``bundle.declared`` via the same function the
-    tool builder uses, so the two always agree). A model-invented alias that maps to
-    no declared tool is blocked here as undeclared (and ADK, finding no matching tool,
-    also fails the call); either way the loop halts and never reaches the proxy."""
-    exposed_names = tuple(provider_safe_tool_aliases(bundle.declared).values())
-    undeclared_guard = make_before_tool_callback(exposed_names)
+    keyed on ``exposed_names`` — the caller passes the aliases it already computed for
+    the tool builder, making the agreement structural. A model-invented alias that maps
+    to no declared tool is blocked here as undeclared (and ADK, finding no matching
+    tool, also fails the call); either way the loop halts and never reaches the proxy."""
 
     def before_tool(tool, args, tool_context):
         if bundle.failures:
             return {"error": "tool loop aborted after a prior tool failure"}
-        blocked = undeclared_guard(tool, args, tool_context)
-        if blocked is not None:
-            return blocked  # undeclared/denied — does NOT count as a tool invocation
+        if tool.name not in exposed_names:
+            return {"error": f"tool '{tool.name}' is not declared for this agent"}
         # The tool is declared and the loop is healthy: it is about to run. Mark it so a
         # subsequent provider failure is treated as post-tool (fail closed, never replay).
         bundle.tool_invoked.append(1)
