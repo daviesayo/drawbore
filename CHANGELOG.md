@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Durable human-approval storage. `FileCheckpointStore` now persists a pending
+  `ApprovalRequest` to disk, so a typed-approval cycle (or a resumable
+  low-confidence halt) survives a process restart and resumes without
+  re-executing the gated agent. The checkpoint store traffics the request in its
+  JSON form; the pipeline owns reconstruction. The in-memory store is unchanged.
+
+- Resumable low-confidence approval cycle. A `HasConfidence` step that falls
+  below the pipeline's `confidence_threshold` in sync mode now mints a resumable
+  `ApprovalRequest` and halts with the new `confidence_approval_pending` halt
+  code when a checkpoint store is present, instead of dying terminally. Resolve
+  it with the same `pipeline.run(..., approval=ApprovalDecision(...))`
+  approve/amend/reject cycle as a `requires_human_approval` gate; the approved or
+  amended output is revalidated through the real output-schema gate and keeps its
+  pinned trust label (approval never declassifies). Without a checkpoint store
+  the trigger still halts terminally as `confidence_below_threshold`, and async
+  mode still dispatches a review and continues — both unchanged. A step that
+  declares both a low confidence and `requires_human_approval` always goes
+  through the explicit approval gate.
+
 - Input-schema relaxation detection for safe pipeline evolution
   (`check_no_schema_relaxation` / `schema_relaxation_diff`, exported from
   `drawbore.config`). Compares two serialized pipeline manifests and flags any
@@ -18,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is treated as a relaxation. The self-improvement admission gate now runs this
   check as a second monotonicity layer and holds a relaxing candidate for human
   review (`verdict.schema_diff`).
+
+- File-backed regression corpus (`FileRegressionCorpus`) for cross-restart
+  persistence. The safety ratchet's corpus can now be pointed at a directory; one
+  `case-NNNNN.json` file per appended case survives a process restart. Atomic
+  writes (`os.replace` after fsync) prevent torn files; `verify()` always reads
+  fresh from disk for tamper detection; the per-case sponsor is embedded inline
+  so attribution survives reload. Drop-in replacement for
+  `InMemoryRegressionCorpus` in production ratchets. Exported from
+  `drawbore.ratchet`.
 
 - Exactly-once effect ledger for durable resume. Effectful tool calls are now
   recorded in a two-phase pending→succeeded log behind the tool proxy; on

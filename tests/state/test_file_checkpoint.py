@@ -176,3 +176,55 @@ def test_step_succeeded_write_is_atomic_no_partial_file(tmp_path):
     files = sorted(p.name for p in run_dir.iterdir())
     assert "step-00000.json" in files
     assert not any(".tmp" in f for f in files)
+
+
+# --- approval request persistence -------------------------------------------
+
+from drawbore.escalation.approval import ApprovalRequest
+
+
+def _approval_request(run_id: str = "r1") -> ApprovalRequest:
+    return ApprovalRequest(
+        request_id="req-abc",
+        run_id=run_id,
+        step="some_agent",
+        question="Approve this output?",
+        reason="Confidence below threshold",
+        package_legible="Step produced: {'value': 1}",
+        proposed_output={"value": 1},
+        proposed_output_trust="TRUSTED",
+    )
+
+
+def test_approval_request_round_trip(tmp_path):
+    """record then read back returns an equal dict; clear then read returns None."""
+    s = FileCheckpointStore(tmp_path)
+    req = _approval_request()
+    req_dict = req.model_dump(mode="json")
+    s.record_approval_request("r1", req_dict)
+    assert s.approval_request_of("r1") == req_dict
+    s.clear_approval_request("r1")
+    assert s.approval_request_of("r1") is None
+
+
+def test_approval_request_absent_run_returns_none(tmp_path):
+    """A run with no stored request returns None."""
+    s = FileCheckpointStore(tmp_path)
+    assert s.approval_request_of("no-such-run") is None
+
+
+def test_clear_approval_request_is_idempotent(tmp_path):
+    """Clearing a request that does not exist must not raise."""
+    s = FileCheckpointStore(tmp_path)
+    s.clear_approval_request("no-such-run")  # must not raise
+
+
+def test_approval_request_durable_across_new_instance(tmp_path):
+    """A second FileCheckpointStore over the same directory reads the stored dict."""
+    s1 = FileCheckpointStore(tmp_path)
+    req = _approval_request()
+    req_dict = req.model_dump(mode="json")
+    s1.record_approval_request("r1", req_dict)
+
+    s2 = FileCheckpointStore(tmp_path)
+    assert s2.approval_request_of("r1") == req_dict

@@ -61,6 +61,16 @@ from .executor import StepExecutor
 from .outcome import Halt
 
 
+# Closed mapping from a pending approval request's reason to the halt code a
+# decision-less poll reports for it. CLOSED + fail-closed: a reason not listed
+# here triggers an ``approval_error`` halt (never a wrong code, never a raw
+# raise) so a future approval kind must extend this mapping deliberately.
+_PENDING_POLL_CODE: dict[str, str] = {
+    "requires_human_approval": "requires_human_approval",
+    "confidence_below_threshold": "confidence_approval_pending",
+}
+
+
 @dataclass
 class Step:
     agent: Agent
@@ -808,16 +818,36 @@ class Pipeline:
             # This prevents a gated side-effecting agent from re-executing on a
             # decision-less poll (double-fire).
             if checkpoints is not None:
-                pending = checkpoints.approval_request_of(run_id)
+                _pending_data = checkpoints.approval_request_of(run_id)
+                pending = (
+                    ApprovalRequest.model_validate(_pending_data)
+                    if _pending_data is not None else None
+                )
                 if pending is not None and pending.step == name:
                     if approval is None:
                         # Decision-less resume: re-surface the pending request
                         # WITHOUT re-executing the gated agent (no double-fire).
+                        # Surface the request's own reason and a code derived from
+                        # it via a CLOSED mapping, so a low-confidence poll reports
+                        # the same code as its initial halt. An unknown reason fails
+                        # closed with an approval_error halt (never a raw raise that
+                        # would escape run() and break the RunResult contract).
+                        poll_code = _PENDING_POLL_CODE.get(pending.reason)
+                        if poll_code is None:
+                            return self._halt(
+                                outputs, steps_run, escalations, step=name,
+                                reason=(
+                                    "approval_error: pending approval request has an "
+                                    f"unhandled reason '{pending.reason}'"
+                                ),
+                                received=None, attempted_output=None,
+                                code="approval_error",
+                            )
                         return self._halt(
                             outputs, steps_run, escalations, step=name,
-                            reason="requires_human_approval",
+                            reason=pending.reason,
                             received=None, attempted_output=pending.proposed_output,
-                            code="requires_human_approval", approval_request=pending,
+                            code=poll_code, approval_request=pending,
                         )
                     # Decision supplied — apply it (existing id-check / reject /
                     # amend-or-approve / schema-gate / record / full-success-block).
@@ -968,7 +998,14 @@ class Pipeline:
                         received=outcome.validated_input, attempted_output=validated_out,
                         code="confidence_marker_without_value",
                     )
-                if confidence < self._confidence_threshold:
+                # A step that ALSO declares requires_human_approval must reach the
+                # explicit approval gate below — never the low-confidence branch
+                # (neither the resumable mint NOR a terminal halt). Skipping the
+                # whole branch here is the anti-bypass guarantee: the explicit gate
+                # owns the human review of an approval-gated low-confidence step, so
+                # such a step never terminally halts here and never bypasses the gate.
+                requires_approval = step.agent.spec.requires_human_approval
+                if confidence < self._confidence_threshold and not requires_approval:
                     reason = (
                         f"confidence_below_threshold: "
                         f"{confidence} < {self._confidence_threshold}"
@@ -981,7 +1018,45 @@ class Pipeline:
                             received=outcome.validated_input, attempted_output=validated_out,
                         ))
                         # async review: fall through and continue the run.
+                    elif checkpoints is not None:
+                        # Sync mode with a checkpoint store: mint a resumable
+                        # approval request (approve/amend/reject) instead of dying.
+                        # The human's decision IS the resolution of the low
+                        # confidence; the pre-execution handler applies it on a
+                        # decided resume (completing the step before control reaches
+                        # this check), so this branch never re-fires on that path.
+                        # Trust is pinned exactly as the explicit gate mint does.
+                        request = ApprovalRequest(
+                            request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+                            question=(
+                                f"Step '{name}' produced confidence {confidence}, "
+                                f"below the threshold {self._confidence_threshold}; "
+                                "approve, amend, or reject the proposed output?"
+                            ),
+                            reason="confidence_below_threshold",
+                            package_legible=build_escalation(
+                                step=name, reason=reason,
+                                received=outcome.validated_input,
+                                attempted_output=validated_out,
+                                trace=tuple(outputs.keys()), agent_id=agent_id,
+                            ).legible(),
+                            proposed_output=validated_out.model_dump(mode="json"),
+                            proposed_output_trust=ledger.scope(run_id, idx).value,
+                        )
+                        checkpoints.record_approval_request(
+                            run_id, request.model_dump(mode="json")
+                        )
+                        return self._halt(
+                            {**outputs, name: validated_out}, steps_run + 1, escalations,
+                            step=name, reason=reason,
+                            received=outcome.validated_input, attempted_output=validated_out,
+                            code="confidence_approval_pending",
+                            approval_request=request,
+                        )
                     else:
+                        # Sync mode with NO store: a resume is impossible without a
+                        # store, so halt terminally (an un-resumable request would
+                        # mislead an operator).
                         return self._halt(
                             {**outputs, name: validated_out}, steps_run + 1, escalations,
                             step=name, reason=reason,
@@ -1008,7 +1083,7 @@ class Pipeline:
                     proposed_output_trust=ledger.scope(run_id, idx).value,
                 )
                 if checkpoints is not None:
-                    checkpoints.record_approval_request(run_id, request)
+                    checkpoints.record_approval_request(run_id, request.model_dump(mode="json"))
                 return self._halt(
                     {**outputs, name: validated_out}, steps_run + 1, escalations,
                     step=name, reason="requires_human_approval",

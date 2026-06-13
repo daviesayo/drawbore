@@ -224,6 +224,41 @@ class FileCheckpointStore(CheckpointStore):
             return TrustLabel.UNTRUSTED
         return TrustLabel(value)
 
+    # --- contract: approval request persistence ----------------------------
+
+    _APPROVAL_FILENAME = "approval-request.json"
+
+    def record_approval_request(self, run_id: str, request: dict[str, Any]) -> None:
+        """Persist the JSON dict of the pending approval request to
+        ``approval-request.json`` inside the run directory.
+
+        The caller (the pipeline) serialises the typed request to a dict via
+        ``model_dump(mode="json")`` before passing it here.  This store never
+        imports or reconstructs a typed approval object from persisted data.
+        """
+        self._atomic_write(
+            self._run_dir(run_id) / self._APPROVAL_FILENAME,
+            request,
+        )
+
+    def approval_request_of(self, run_id: str) -> dict[str, Any] | None:
+        """Read ``approval-request.json`` fresh from disk and return it as a
+        plain dict, or ``None`` if absent.
+
+        The caller (the pipeline) reconstructs the typed request via
+        ``ApprovalRequest.model_validate(data)``.  This store only stores and
+        retrieves JSON — it imports no type from a higher subsystem.
+        """
+        path = self._run_dir(run_id) / self._APPROVAL_FILENAME
+        return self._read_json(path)
+
+    def clear_approval_request(self, run_id: str) -> None:
+        """Remove ``approval-request.json``; idempotent if absent."""
+        try:
+            os.remove(self._run_dir(run_id) / self._APPROVAL_FILENAME)
+        except FileNotFoundError:
+            pass
+
     # --- contract: model binding for secure reconstruction ------------------
 
     def bind_models(

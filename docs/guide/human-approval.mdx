@@ -113,6 +113,12 @@ On an approved or amended step, the output is checkpointed and the run continues
 from the next step. On rejection the run halts with `halt_code == "approval_rejected"`;
 that request is terminal.
 
+The example above uses `InMemoryCheckpointStore`, so a pending request lives only
+in process. To let an approval cycle survive a process restart, use a durable
+checkpoint store: `FileCheckpointStore(path)` persists the pending request to disk
+and a fresh process resumes it (with the decision) without re-executing the gated
+agent.
+
 ## Invariants
 
 **Schema gate on amendments.** An amended output is validated against the step's
@@ -140,6 +146,26 @@ so a new decision can be delivered.
 first execution (never on a decision-only poll). Write gated agent handlers as
 idempotent as a defensive practice — a process restart before the checkpoint is
 persisted can cause re-execution.
+
+## Low-confidence steps use the same cycle
+
+A `HasConfidence` step that falls below the pipeline's `confidence_threshold`
+resolves through the same approve/amend/reject cycle as an explicit gate, as long
+as the run is synchronous and has a checkpoint store. Instead of dying, it mints
+an `ApprovalRequest` (with `reason == "confidence_below_threshold"`) and halts
+with `halt_code == "confidence_approval_pending"`; deliver an `ApprovalDecision`
+the same way to approve, amend (revalidated through the output schema), or reject
+it. The human's decision is the resolution of the low confidence — an amended
+output that is still below the threshold does not re-trigger the cycle.
+
+Two behaviours are deliberately unchanged. Without a checkpoint store the same
+trigger halts terminally as `confidence_below_threshold` (a resume is impossible
+without a store). Under an `async` escalation policy the low-confidence trigger
+dispatches a review and the run continues, with no resumable request minted.
+
+A step that declares **both** a low confidence and `requires_human_approval`
+always goes through the explicit `requires_human_approval` gate, never the
+low-confidence cycle — one gate owns the human review, with no bypass.
 
 ## Trust boundary
 

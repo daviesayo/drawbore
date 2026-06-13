@@ -49,6 +49,16 @@ An `approval_rejected` halt means a human reviewer rejected the step's proposed
 output; it is terminal for that request. Re-running the pipeline mints a fresh
 approval request.
 
+A `confidence_approval_pending` halt means a `HasConfidence` step produced a
+result below the pipeline's `confidence_threshold` in sync mode and a checkpoint
+store was present, so the run minted a resumable approval request instead of
+dying — resolve it with the same approve/amend/reject decision a
+`requires_human_approval` gate uses. Without a checkpoint store the same trigger
+halts terminally as `confidence_below_threshold` (a resume is impossible without
+a store). A step that declares both a low confidence and `requires_human_approval`
+goes through the explicit approval gate (`requires_human_approval`), never the
+confidence cycle.
+
 An `approval_error` halt means an approval decision could not be applied: no
 pending request matched, the request id was stale or mismatched, the decision
 was replayed (already consumed), or the run never consumed the decision.

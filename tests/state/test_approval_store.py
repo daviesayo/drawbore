@@ -21,7 +21,7 @@ def test_abc_defaults_are_no_op_and_none():
         def record_fingerprint(self, run_id, fingerprint): ...
         def fingerprint_matches(self, run_id, fingerprint): return True
     bare = Bare()
-    bare.record_approval_request("r-1", _req())      # no-op default
+    bare.record_approval_request("r-1", _req().model_dump(mode="json"))  # no-op default
     assert bare.approval_request_of("r-1") is None   # fail-closed default
     bare.clear_approval_request("r-1")               # no-op default
 
@@ -29,9 +29,10 @@ def test_abc_defaults_are_no_op_and_none():
 def test_in_memory_record_lookup_clear_cycle():
     store = InMemoryCheckpointStore()
     assert store.approval_request_of("r-1") is None
-    store.record_approval_request("r-1", _req())
+    req_dict = _req().model_dump(mode="json")
+    store.record_approval_request("r-1", req_dict)
     got = store.approval_request_of("r-1")
-    assert got is not None and got.request_id == "req-1"
+    assert got is not None and got["request_id"] == "req-1"
     assert store.approval_request_of("other-run") is None   # keyed by run_id
     store.clear_approval_request("r-1")
     assert store.approval_request_of("r-1") is None
