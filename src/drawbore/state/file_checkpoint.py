@@ -224,6 +224,34 @@ class FileCheckpointStore(CheckpointStore):
             return TrustLabel.UNTRUSTED
         return TrustLabel(value)
 
+    # --- contract: approval request persistence ----------------------------
+
+    _APPROVAL_FILENAME = "approval-request.json"
+
+    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
+        """Persist ``request`` to ``approval-request.json`` inside the run directory."""
+        self._atomic_write(
+            self._run_dir(run_id) / self._APPROVAL_FILENAME,
+            request.model_dump(mode="json"),
+        )
+
+    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
+        """Read ``approval-request.json`` fresh from disk; ``None`` if absent."""
+        path = self._run_dir(run_id) / self._APPROVAL_FILENAME
+        data = self._read_json(path)
+        if data is None:
+            return None
+        import importlib
+        cls = importlib.import_module("drawbore.escalation.approval").ApprovalRequest
+        return cls.model_validate(data)
+
+    def clear_approval_request(self, run_id: str) -> None:
+        """Remove ``approval-request.json``; idempotent if absent."""
+        try:
+            os.remove(self._run_dir(run_id) / self._APPROVAL_FILENAME)
+        except FileNotFoundError:
+            pass
+
     # --- contract: model binding for secure reconstruction ------------------
 
     def bind_models(
