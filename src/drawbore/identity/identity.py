@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Iterable, Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -38,6 +38,18 @@ class AgentIdentity:
     tenant: str | None = None
 
 
+class _SpecLike(Protocol):
+    """Structural protocol for the attributes ``attestation_surface`` reads.
+
+    Keeps ``identity`` a leaf: no import of ``drawbore.agent`` is needed.
+    """
+
+    tools: Iterable[str]
+    input: type[BaseModel]
+    output: type[BaseModel]
+    risk_tier: RiskTier
+
+
 def _schema_fingerprint(model: type[BaseModel]) -> str:
     """A structural fingerprint of a model for re-attestation.
 
@@ -51,7 +63,7 @@ def _schema_fingerprint(model: type[BaseModel]) -> str:
     return json.dumps(model.model_json_schema(), sort_keys=True)
 
 
-def attestation_surface(spec) -> tuple:
+def attestation_surface(spec: _SpecLike) -> tuple:
     """Compute the re-attestation surface of an agent spec: the tuple of
     (tool declarations, input schema, output schema, risk tier). A change
     to ANY of these — including a nested schema change — requires re-attestation by
