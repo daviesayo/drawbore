@@ -19,12 +19,7 @@ from pydantic import BaseModel
 from drawbore.llm import LLMGateway, ModelRequest, ModelResponse, TokenUsage
 
 from .errors import TestingError
-
-
-def _is_exception(value: Any) -> bool:
-    return isinstance(value, BaseException) or (
-        isinstance(value, type) and issubclass(value, BaseException)
-    )
+from .models import _is_exception, _raise
 
 
 class FakeGateway(LLMGateway):
@@ -58,7 +53,7 @@ class FakeGateway(LLMGateway):
             )
 
         if _is_exception(value):
-            raise value() if isinstance(value, type) else value
+            _raise(value)
         if callable(value) and not isinstance(value, BaseModel):
             value = value(request)
             if inspect.isawaitable(value):
