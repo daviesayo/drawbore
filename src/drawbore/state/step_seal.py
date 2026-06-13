@@ -16,7 +16,6 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from drawbore._canon import canonical_fingerprint, text_fingerprint
-from drawbore.tools.errors import ToolAccessError
 
 #: Human-facing labels for sealed fields whose model name is an internal
 #: fingerprint column. Halt reasons and ledger prose use these; the
@@ -59,10 +58,10 @@ class StepSeal(BaseModel):
 
 
 def _tool_is_effectful(registry: "ToolRegistry", ref: str) -> bool:
-    """Return the tool's effectful flag, fail-closed True if the ref is absent."""
+    """Return the tool's effectful flag, fail-closed True if the lookup raises."""
     try:
         return registry.get(ref).effectful
-    except ToolAccessError:
+    except Exception:
         return True
 
 

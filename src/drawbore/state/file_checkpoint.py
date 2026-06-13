@@ -138,6 +138,12 @@ class FileCheckpointStore(CheckpointStore):
             self._run_dir(run_id) / self._step_filename(step), record
         )
 
+    def _merge_step_record(self, run_id: str, step: int, **fields: Any) -> None:
+        """Read-copy-mutate-write a step record, merging ``fields`` into it."""
+        record = dict(self._step_record(run_id, step))
+        record.update(fields)
+        self._put_step_record(run_id, step, record)
+
     # --- contract: outputs --------------------------------------------------
 
     def step_started(self, run_id: str, step: int) -> None:
@@ -147,10 +153,7 @@ class FileCheckpointStore(CheckpointStore):
         return None
 
     def step_succeeded(self, run_id: str, step: int, output: BaseModel) -> None:
-        record = dict(self._step_record(run_id, step))
-        record["completed"] = True
-        record["output"] = output.model_dump(mode="json")
-        self._put_step_record(run_id, step, record)
+        self._merge_step_record(run_id, step, completed=True, output=output.model_dump(mode="json"))
 
     def is_completed(self, run_id: str, step: int) -> bool:
         return bool(self._step_record(run_id, step).get("completed"))
@@ -176,9 +179,7 @@ class FileCheckpointStore(CheckpointStore):
     # --- contract: skip marks ----------------------------------------------
 
     def step_skipped(self, run_id: str, step: int) -> None:
-        record = dict(self._step_record(run_id, step))
-        record["skipped"] = True
-        self._put_step_record(run_id, step, record)
+        self._merge_step_record(run_id, step, skipped=True)
 
     def is_skipped(self, run_id: str, step: int) -> bool:
         return bool(self._step_record(run_id, step).get("skipped"))
@@ -201,9 +202,7 @@ class FileCheckpointStore(CheckpointStore):
     # --- contract: seals ----------------------------------------------------
 
     def record_seal(self, run_id: str, step: int, seal: StepSeal) -> None:
-        record = dict(self._step_record(run_id, step))
-        record["seal"] = seal.model_dump(mode="json")
-        self._put_step_record(run_id, step, record)
+        self._merge_step_record(run_id, step, seal=seal.model_dump(mode="json"))
 
     def seal_of(self, run_id: str, step: int) -> StepSeal | None:
         seal = self._step_record(run_id, step).get("seal")
@@ -214,9 +213,7 @@ class FileCheckpointStore(CheckpointStore):
     # --- contract: trust labels --------------------------------------------
 
     def record_trust(self, run_id: str, step: int, trust: TrustLabel) -> None:
-        record = dict(self._step_record(run_id, step))
-        record["trust"] = trust.value
-        self._put_step_record(run_id, step, record)
+        self._merge_step_record(run_id, step, trust=trust.value)
 
     def trust_of(self, run_id: str, step: int) -> TrustLabel:
         value = self._step_record(run_id, step).get("trust")

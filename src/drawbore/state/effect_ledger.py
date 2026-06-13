@@ -24,6 +24,10 @@ from pydantic import BaseModel, ConfigDict
 # ---------------------------------------------------------------------------
 # Canonical order-stable hash — used for effect matching, NOT for proxy logs.
 # ---------------------------------------------------------------------------
+# Three hashers serve distinct purposes — do not mix them up:
+# ``ledger_args_hash`` (here): order-stable args hash for the effect ledger; NOT for payload identity or config drift.
+# ``payload_hash`` (drawbore.observability.hashing): short repr-based identity tag for spans/proxy-log/audit; NOT order-stable.
+# ``canonical_fingerprint``/``text_fingerprint`` (drawbore._canon): config-drift and step-seal fingerprints; NOT for effect matching.
 
 
 def ledger_args_hash(args: Any) -> str:
@@ -155,9 +159,12 @@ class InMemoryEffectLedger(EffectLedger):
 
     def __init__(self) -> None:
         self._entries: dict[tuple[str, int, int], EffectEntry] = {}
+        self._counts: dict[tuple[str, int], int] = {}
 
     def record_pending(self, entry: EffectEntry) -> None:
         self._entries[(entry.run_id, entry.step, entry.position)] = entry
+        key = (entry.run_id, entry.step)
+        self._counts[key] = self._counts.get(key, 0) + 1
 
     def record_succeeded(
         self, run_id: str, step: int, position: int, output: Any
@@ -178,7 +185,7 @@ class InMemoryEffectLedger(EffectLedger):
         return self._entries.get((run_id, step, position))
 
     def recorded_count(self, run_id: str, step: int) -> int:
-        return sum(1 for (r, s, _) in self._entries if r == run_id and s == step)
+        return self._counts.get((run_id, step), 0)
 
     def entries_from(
         self, run_id: str, step: int, start_pos: int
