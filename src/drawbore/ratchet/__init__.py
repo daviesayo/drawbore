@@ -17,12 +17,14 @@ from .corpus import (
 )
 from .capability import authority_delta
 from .errors import CorpusIntegrityError, RatchetError
+from .file_corpus import FileRegressionCorpus
 from .gate import admit
 from .sink import InMemoryRatchetSink, RatchetSink
 from .verdict import RatchetVerdict
 
 __all__ = [
     "CorpusIntegrityError",
+    "FileRegressionCorpus",
     "admit",
     "authority_delta",
     "GENESIS",

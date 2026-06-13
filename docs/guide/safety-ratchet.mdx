@@ -16,7 +16,7 @@ import asyncio
 
 from drawbore.config import AgentCatalog, to_config
 from drawbore.ratchet import (
-    InMemoryRatchetSink, InMemoryRegressionCorpus, admit, derive_cases,
+    FileRegressionCorpus, InMemoryRatchetSink, admit, derive_cases,
 )
 
 # 1. Observe the baseline: run your pipeline once in test mode and keep the
@@ -26,13 +26,16 @@ async with pipeline.test_mode(**full_mocks) as tp:
     baseline = await tp.run(initial)
 
 # 2. Seed the corpus mechanically — cases are derived, never hand-written.
-corpus = InMemoryRegressionCorpus()
+#    Use FileRegressionCorpus so the corpus survives a process restart.
+corpus = FileRegressionCorpus("/var/lib/myapp/ratchet-corpus")
 for case in derive_cases(config, pipeline, baseline, initial=initial,
                          baseline_mocks=serializable_mocks,
                          derived_at="2026-06-13T00:00:00Z", predecessor=None):
     corpus.append(case, sponsor="a.reviewer")
 
-# 3. Gate every proposed manifest.
+# 3. Gate every proposed manifest.  A fresh instance over the same directory
+#    reloads the persisted corpus on the first read — no explicit load call needed.
+corpus = FileRegressionCorpus("/var/lib/myapp/ratchet-corpus")
 verdict = await admit(candidate_json, agents=catalog, corpus=corpus,
                       sponsor="a.reviewer", baseline_config=config,
                       initial_input=initial, baseline_mocks=serializable_mocks,
@@ -43,6 +46,22 @@ if verdict.admitted:
 else:
     print(verdict.legible())             # which layer refused, and why
 ```
+
+## Corpus persistence
+
+`FileRegressionCorpus` persists the corpus to a directory — one `case-NNNNN.json`
+per appended case — so the corpus survives a process restart. Atomic writes (`os.replace`
+after fsync) ensure a crash mid-write never tears a committed case. A fresh
+`FileRegressionCorpus` instance pointed at the same directory reloads the chain on the
+first read; `verify()` always reads fresh from disk so on-disk tampering is detected
+regardless of what is in memory.
+
+`InMemoryRegressionCorpus` (the import you see in most examples) is the in-process
+default — convenient for tests, insufficient for production. Use `FileRegressionCorpus`
+for any ratchet that must survive a restart.
+
+Single-writer assumption: concurrent multi-process appends are not supported. One process
+(your gating loop) appends to the corpus; `os.replace` is atomic for a single writer.
 
 ## The four layers
 

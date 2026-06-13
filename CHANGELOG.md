@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check as a second monotonicity layer and holds a relaxing candidate for human
   review (`verdict.schema_diff`).
 
+- File-backed regression corpus (`FileRegressionCorpus`) for cross-restart
+  persistence. The safety ratchet's corpus can now be pointed at a directory; one
+  `case-NNNNN.json` file per appended case survives a process restart. Atomic
+  writes (`os.replace` after fsync) prevent torn files; `verify()` always reads
+  fresh from disk for tamper detection; the per-case sponsor is embedded inline
+  so attribution survives reload. Drop-in replacement for
+  `InMemoryRegressionCorpus` in production ratchets. Exported from
+  `drawbore.ratchet`.
+
 - Exactly-once effect ledger for durable resume. Effectful tool calls are now
   recorded in a two-phase pending→succeeded log behind the tool proxy; on
   crash+resume an already-recorded effect is replayed from the ledger instead of
