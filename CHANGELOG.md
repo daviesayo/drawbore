@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Document fan-in input binding in the pipelines guide: explains predecessor-output
+  mode (a step with no `inputs=` bindings takes input from the declaration-order-previous
+  step, not from the topological fork), shows the silent footgun in a fan-in topology
+  where a binding-less branch inherits from its sibling rather than the router, and
+  gives the rule to always declare explicit `From(...)` bindings on every fan-in branch.
+  An omitted binding is caught at run time as a `schema_violation` halt. Companion entry
+  added to the common-mistakes agent guide.
 - Document the tool-call instrumentation seam in the tools guide: every tool call
   (custom, MCP, and builtin) passes through the proxy, which records timing, input/output
   hashes, and disposition, surfaced on `result.metrics.tool_calls` and as `execute_tool`

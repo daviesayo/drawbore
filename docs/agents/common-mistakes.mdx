@@ -15,7 +15,11 @@ Wrong: invoking a tool the agent didn't list. Right: declare it in
 
 ### Relying on implicit data flow for fan-in
 Wrong: assuming a later step automatically sees an earlier step's output. Right:
-use `From("agent.field")` bindings. See [Pipelines](/docs/guide/pipelines).
+use `From("agent.field")` bindings on every fan-in branch. A branch added with no
+`inputs=` takes its input from the immediately preceding step in declaration order
+— in a fan-in topology that is a sibling branch, not the fork. An omitted binding
+surfaces at run time as a `schema_violation` halt naming the branch's input schema.
+See [Pipelines — Binding inputs in fan-in topologies](/docs/guide/pipelines).
 
 ### Putting provider keys in pipeline JSON
 Wrong: serializing credentials or a gateway into the manifest. Right: keep
