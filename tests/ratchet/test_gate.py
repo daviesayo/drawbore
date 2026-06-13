@@ -186,3 +186,55 @@ async def test_wider_caller_baseline_cannot_unpin_the_authority_anchor():
     )
     assert verdict.admitted is False
     assert verdict.rejection_layer == "corpus_integrity"
+
+
+async def test_admit_rejects_input_schema_relaxation():
+    registry, catalog, config, corpus = await _seeded()
+    # Candidate has 'retriever' input schema relaxed: 'transaction_id' is
+    # dropped from required (making it optional). The input_schema_hash is
+    # kept unchanged so the resolver's drift check still passes (hash matches
+    # the live agent). Layer 2b must fire and reject before corpus replay.
+    candidate = config.model_dump(mode="json")
+    for agent_decl in candidate["agents"]:
+        if agent_decl["name"] == "retriever":
+            schema = dict(agent_decl["input_schema"])
+            schema["required"] = []  # drop 'transaction_id' — relaxation
+            agent_decl["input_schema"] = schema
+            break
+
+    verdict = await admit(
+        candidate,
+        agents=catalog, corpus=corpus, sponsor="a.reviewer",
+        baseline_config=config, initial_input=INITIAL, baseline_mocks=MOCKS,
+        derived_at="2026-06-13T01:00:00Z", registry=registry,
+    )
+    assert verdict.admitted is False
+    assert verdict.rejection_layer == "schema_relaxation"
+    assert verdict.schema_diff is not None
+    assert not verdict.schema_diff.ok
+
+
+async def test_admit_allows_input_schema_tightening():
+    registry, catalog, config, corpus = await _seeded()
+    # Candidate TIGHTENS 'retriever' input schema: adds minLength: 1 to the
+    # transaction_id property (a new constraint, never a relaxation). The
+    # schema_relaxation layer must NOT trigger.
+    candidate = config.model_dump(mode="json")
+    for agent_decl in candidate["agents"]:
+        if agent_decl["name"] == "retriever":
+            schema = dict(agent_decl["input_schema"])
+            props = dict(schema.get("properties", {}))
+            tx_id = dict(props.get("transaction_id", {}))
+            tx_id["minLength"] = 1
+            props["transaction_id"] = tx_id
+            schema["properties"] = props
+            agent_decl["input_schema"] = schema
+            break
+
+    verdict = await admit(
+        candidate,
+        agents=catalog, corpus=corpus, sponsor="a.reviewer",
+        baseline_config=config, initial_input=INITIAL, baseline_mocks=MOCKS,
+        derived_at="2026-06-13T01:00:00Z", registry=registry,
+    )
+    assert verdict.rejection_layer != "schema_relaxation"

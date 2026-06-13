@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 
 from drawbore._canon import canonical_fingerprint
 from drawbore.agent import Agent
-from drawbore.config import AgentCatalog, from_config
+from drawbore.config import AgentCatalog, from_config, schema_relaxation_diff
 from drawbore.config.errors import ConfigResolutionError
 from drawbore.config.models import PipelineConfig
 from drawbore.testing import run_containment
@@ -62,7 +62,7 @@ async def admit(
             sink.write(verdict)
         return verdict
 
-    def _reject(layer, *, fingerprint="", diff=None, case=None, reason=None):
+    def _reject(layer, *, fingerprint="", diff=None, case=None, reason=None, schema_diff=None):
         return _done(RatchetVerdict(
             admitted=False, pipeline=None,
             manifest_fingerprint=fingerprint,
@@ -73,6 +73,7 @@ async def admit(
             ),
             corpus_root_before=root_before, corpus_root_after=None,
             reason=reason,
+            schema_diff=schema_diff,
         ))
 
     # Layer 0: corpus integrity — the chain itself, then the pinned replay inputs.
@@ -123,6 +124,12 @@ async def admit(
     diff = authority_delta(baseline_config, candidate_config)
     if not diff.ok:
         return _reject("authority", fingerprint=fingerprint, diff=diff)
+
+    # Layer 2b: input-schema relaxation — a wider accepted-input set is a
+    # safety regression on the data axis; hold for human review.
+    sdiff = schema_relaxation_diff(baseline_config, candidate_config)
+    if not sdiff.ok:
+        return _reject("schema_relaxation", fingerprint=fingerprint, schema_diff=sdiff)
 
     # Layer 3: corpus replay through the real safety layer.
     for case in corpus.cases():
