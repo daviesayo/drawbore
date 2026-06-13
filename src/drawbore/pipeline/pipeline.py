@@ -100,6 +100,31 @@ class RunResult:
     confinement_receipt: "ConfinementReceipt | None" = None
 
 
+@dataclass(frozen=True)
+class _RunContext:
+    """The run-scoped services and knobs threaded through ``_run_inner``.
+
+    Built once in ``run()`` from its keyword arguments so a new run-scoped
+    dependency extends one type instead of two signatures. Private; ``run()``'s
+    public signature is the stable surface.
+    """
+
+    run_id: str
+    recorder: "AuditRecorder"
+    ledger_builder: "ResumeLedgerBuilder"
+    checkpoints: "CheckpointStore | None" = None
+    identities: "IdentityRegistry | None" = None
+    tenant_id: str | None = None
+    evidence_store: "EvidenceStore | None" = None
+    registry_override: Any | None = None
+    initial_trust: TrustLabel = TrustLabel.TRUSTED
+    approval: "ApprovalDecision | None" = None
+    effect_ledger: "EffectLedger | None" = None
+    max_calls_per_tool: int = 3
+    max_tool_calls_per_run: int = 500
+    max_distinct_tools_per_run: int = 50
+
+
 class Pipeline:
     """A topology of typed agents with explicit data bindings."""
 
@@ -512,22 +537,25 @@ class Pipeline:
             version=self.version, tenant_id=tenant_id,
         )
         ledger_builder = ResumeLedgerBuilder(run_id=resolved_run_id)
+        ctx = _RunContext(
+            run_id=resolved_run_id,
+            recorder=recorder,
+            ledger_builder=ledger_builder,
+            checkpoints=checkpoints,
+            identities=identities,
+            tenant_id=tenant_id,
+            evidence_store=evidence_store,
+            registry_override=registry_override,
+            initial_trust=initial_trust,
+            approval=approval,
+            effect_ledger=effect_ledger,
+            max_calls_per_tool=max_calls_per_tool,
+            max_tool_calls_per_run=max_tool_calls_per_run,
+            max_distinct_tools_per_run=max_distinct_tools_per_run,
+        )
         result: RunResult | None = None
         try:
-            result = await self._run_inner(
-                initial, engine,
-                run_id=resolved_run_id, checkpoints=checkpoints,
-                identities=identities, tenant_id=tenant_id, recorder=recorder,
-                ledger_builder=ledger_builder,
-                evidence_store=evidence_store,
-                registry_override=registry_override,
-                initial_trust=initial_trust,
-                approval=approval,
-                effect_ledger=effect_ledger,
-                max_calls_per_tool=max_calls_per_tool,
-                max_tool_calls_per_run=max_tool_calls_per_run,
-                max_distinct_tools_per_run=max_distinct_tools_per_run,
-            )
+            result = await self._run_inner(initial, engine, ctx)
             return result
         finally:
             # `finally` runs after the return value is evaluated but before the
@@ -582,22 +610,8 @@ class Pipeline:
     async def _run_inner(
         self,
         initial: BaseModel,
-        engine: OrchestratorEngine | None = None,
-        *,
-        run_id: str,
-        checkpoints: CheckpointStore | None = None,
-        identities: IdentityRegistry | None = None,
-        tenant_id: str | None = None,
-        recorder: AuditRecorder,
-        ledger_builder: ResumeLedgerBuilder,
-        evidence_store: EvidenceStore | None = None,
-        registry_override: Any | None = None,
-        initial_trust: TrustLabel = TrustLabel.TRUSTED,
-        approval: "ApprovalDecision | None" = None,
-        effect_ledger: "EffectLedger | None" = None,
-        max_calls_per_tool: int = 3,
-        max_tool_calls_per_run: int = 500,
-        max_distinct_tools_per_run: int = 50,
+        engine: OrchestratorEngine | None,
+        ctx: _RunContext,
     ) -> RunResult:
         """Execute the pipeline (halt-and-escalate default).
 
@@ -611,6 +625,21 @@ class Pipeline:
         invocation; on a resumed run an async escalation delivered in a prior
         attempt is not re-surfaced (its step is skipped as already completed).
         """
+        # Unpack the run context into the local names the scheduler body uses.
+        run_id = ctx.run_id
+        checkpoints = ctx.checkpoints
+        identities = ctx.identities
+        tenant_id = ctx.tenant_id
+        recorder = ctx.recorder
+        ledger_builder = ctx.ledger_builder
+        evidence_store = ctx.evidence_store
+        registry_override = ctx.registry_override
+        initial_trust = ctx.initial_trust
+        approval = ctx.approval
+        effect_ledger = ctx.effect_ledger
+        max_calls_per_tool = ctx.max_calls_per_tool
+        max_tool_calls_per_run = ctx.max_tool_calls_per_run
+        max_distinct_tools_per_run = ctx.max_distinct_tools_per_run
         engine = engine or LocalEngine()
         # A test-mode scoped registry overlay, when supplied, is the SINGLE registry
         # the whole run sees — it must feed both the ToolProxy and the ToolLoopBundle,
