@@ -65,25 +65,27 @@ class ProductionLLMGateway(LLMGateway):
         # model once (re-applying provider config) and never disables halt-and-escalate.
         # Provider/transport exceptions propagate raw on every call (the runtime
         # classifies them).
-        holder: dict = {}
+        _won_response: object = None
+        _won_content: object = None
 
         async def _reask(hint: str) -> object:
+            nonlocal _won_response, _won_content
             kwargs = dict(base_kwargs)
             kwargs["messages"] = list(base_kwargs["messages"]) + [
                 {"role": "user", "content": hint}
             ]
             response = await litellm.acompletion(**kwargs)
             content = self._content_or_halt(response, model)
-            holder["response"], holder["content"] = response, content
+            _won_response, _won_content = response, content
             return content
 
         response = await litellm.acompletion(**base_kwargs)
         content = self._content_or_halt(response, model)
-        holder["response"], holder["content"] = response, content
+        _won_response, _won_content = response, content
         coerced = await coerce_structured_output(
             agent=model, initial_text=content, reask=_reask, budget=OneShotBudget(),
         )
-        won, won_content = holder["response"], holder["content"]
+        won, won_content = _won_response, _won_content
         return ModelResponse(
             output=coerced.value, model_used=model,
             raw_text=won_content if isinstance(won_content, str) else "",

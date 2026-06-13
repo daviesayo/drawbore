@@ -199,6 +199,7 @@ async def coerce_structured_output(
     text = initial_text
     ex = extract_object(text)
     while True:
+        can_reprompt = reprompts < 1 and budget.can_reask()
         if ex.kind == "object":
             errors = validate_object(ex.value) if validate_object is not None else None
             if errors is None:
@@ -206,7 +207,7 @@ async def coerce_structured_output(
             # An object that parsed but failed the output schema. Reprompt-eligible,
             # sharing the single-reprompt budget. When the budget is spent, return it
             # so the executor's authoritative schema gate halts — never raise here.
-            if reprompts >= 1 or not budget.can_reask():
+            if not can_reprompt:
                 return Coerced(value=ex.value, reprompts=reprompts)
             text = await reask(schema_reprompt_instruction(errors, tool_names=tool_names))
             reprompts += 1
@@ -215,7 +216,7 @@ async def coerce_structured_output(
         if ex.kind == "structural":
             raise structured_output_halt(agent, ex, text=text, reprompted=reprompts > 0)
         # absent: reprompt-eligible
-        if reprompts >= 1 or not budget.can_reask():
+        if not can_reprompt:
             raise structured_output_halt(agent, ex, text=text, reprompted=reprompts > 0)
         text = await reask(reprompt_instruction(tool_names=tool_names))
         reprompts += 1

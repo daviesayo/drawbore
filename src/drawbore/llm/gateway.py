@@ -78,22 +78,24 @@ class LiteLLMGateway(LLMGateway):
         never advances the fallback chain (that is for transport failures) and never
         disables halt-and-escalate. A provider/transport exception propagates so the
         chain may fall back."""
-        holder: dict = {}
+        _won_response: object = None
+        _won_content: object = None
 
         async def _reask(hint: str) -> object:
+            nonlocal _won_response, _won_content
             corrective = messages + [{"role": "user", "content": hint}]
             response = await litellm.acompletion(model=model, messages=corrective, stream=False)
             content = self._content_or_halt(response, model)
-            holder["response"], holder["content"] = response, content
+            _won_response, _won_content = response, content
             return content
 
         response = await litellm.acompletion(model=model, messages=messages, stream=False)
         content = self._content_or_halt(response, model)
-        holder["response"], holder["content"] = response, content
+        _won_response, _won_content = response, content
         coerced = await coerce_structured_output(
             agent=model, initial_text=content, reask=_reask, budget=OneShotBudget(),
         )
-        won, won_content = holder["response"], holder["content"]
+        won, won_content = _won_response, _won_content
         return ModelResponse(
             output=coerced.value, model_used=model,
             raw_text=won_content if isinstance(won_content, str) else "",
