@@ -30,6 +30,10 @@ class Tool:
     exfil_capable: bool = False                     # True if invoking it can move data outward across
                                                     # the trust boundary; such calls are refused while
                                                     # a step's taint scope is UNTRUSTED
+    effectful: bool = True                          # False for pure-read tools that must NOT be
+                                                    # ledgered or replayed on resume (e.g. evidence
+                                                    # retrieval); True for any tool that may produce
+                                                    # a durable side-effect
 
     def __post_init__(self) -> None:
         # Coerce so the proxy's identity checks can't be bypassed by a raw string
@@ -38,6 +42,8 @@ class Tool:
             object.__setattr__(self, "source_trust", TrustLabel(self.source_trust))
         if not isinstance(self.exfil_capable, bool):
             object.__setattr__(self, "exfil_capable", bool(self.exfil_capable))
+        if not isinstance(self.effectful, bool):
+            object.__setattr__(self, "effectful", bool(self.effectful))
 
 
 class ToolRegistry:
@@ -53,12 +59,14 @@ class ToolRegistry:
         *,
         source_trust: TrustLabel = TrustLabel.TRUSTED,
         exfil_capable: bool = False,
+        effectful: bool = True,
     ) -> Tool:
         return self._register(
             name, handler, allowed_operations, schema,
             kind="custom",
             source_trust=source_trust,
             exfil_capable=exfil_capable,
+            effectful=effectful,
         )
 
     def register_builtin(
@@ -70,12 +78,14 @@ class ToolRegistry:
         *,
         source_trust: TrustLabel = TrustLabel.TRUSTED,
         exfil_capable: bool = False,
+        effectful: bool = True,
     ) -> Tool:
         return self._register(
             name, handler, allowed_operations, schema,
             kind="builtin",
             source_trust=source_trust,
             exfil_capable=exfil_capable,
+            effectful=effectful,
         )
 
     def register_mcp_tool(
@@ -87,6 +97,7 @@ class ToolRegistry:
         *,
         source_trust: TrustLabel = TrustLabel.UNTRUSTED,
         exfil_capable: bool = False,
+        effectful: bool = True,
     ) -> Tool:
         """Register a tool backed by an MCP server (``kind="mcp"``). The handler is
         an opaque async callable (built by ``drawbore.mcp``); the registry stays
@@ -97,6 +108,7 @@ class ToolRegistry:
             kind="mcp",
             source_trust=source_trust,
             exfil_capable=exfil_capable,
+            effectful=effectful,
         )
 
     def _register(
@@ -109,6 +121,7 @@ class ToolRegistry:
         *,
         source_trust: TrustLabel = TrustLabel.TRUSTED,
         exfil_capable: bool = False,
+        effectful: bool = True,
     ) -> Tool:
         if name in self._tools:
             raise ValueError(f"tool '{name}' is already registered")
@@ -120,6 +133,7 @@ class ToolRegistry:
             kind=kind,
             source_trust=source_trust,
             exfil_capable=exfil_capable,
+            effectful=effectful,
         )
         self._tools[name] = tool
         return tool
