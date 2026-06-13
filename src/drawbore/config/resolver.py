@@ -26,7 +26,6 @@ from drawbore.tools import registry as default_registry
 
 from .catalog import AgentCatalog, resolve_ref
 from .errors import ConfigResolutionError
-from .fingerprint import schema_fingerprint
 from .models import AgentConfig, NodeConfig, PipelineConfig, SCHEMA_VERSION, StepConfig
 
 
@@ -169,49 +168,50 @@ def _reject_duplicate_agent_names(config: PipelineConfig) -> None:
         seen.add(ac.name)
 
 
+# Drift-check metadata for ``_check_declaration``. The check derives the
+# expected declaration from ``_agent_config`` (the single serialization mapping)
+# and compares every ``AgentConfig`` field, so a new contract field is covered
+# automatically. These three maps only hold the exceptions to the defaults.
+#
+# Fields not compared field-by-field: ``name`` has a bespoke message (it names
+# the catalog ref); ``ref`` is the catalog key (equal by construction); the full
+# schema dicts are covered by their ``*_schema_hash`` fields.
+_DRIFT_SKIP = frozenset({"name", "ref", "input_schema", "output_schema"})
+# Fields whose legible drift label differs from the Python field name.
+_DRIFT_LABEL = {
+    "risk_tier": "risk-tier",
+    "tools": "tool",
+    "input_schema_hash": "input schema",
+    "output_schema_hash": "output schema",
+}
+# Fields whose drift message omits the values (long, derived, or sensitive).
+_DRIFT_NO_VALUES = frozenset({"instructions", "input_schema_hash", "output_schema_hash"})
+
+
 def _check_declaration(ac: AgentConfig, agent: Agent) -> None:
+    # Deferred import: ``serialization`` is a sibling module and does not import
+    # ``resolver``; importing at call time keeps the package free of any cycle.
+    from .serialization import _agent_config
+
     spec = agent.spec
     if spec.name != ac.name:
         raise ConfigResolutionError(
             f"agent ref '{ac.ref}' resolves to '{spec.name}', config declares '{ac.name}'"
         )
-    if spec.version != ac.version:
+    expected = _agent_config(agent, ref=ac.ref)
+    for field in AgentConfig.model_fields:
+        if field in _DRIFT_SKIP:
+            continue
+        got = getattr(ac, field)
+        want = getattr(expected, field)
+        if got == want:
+            continue
+        label = _DRIFT_LABEL.get(field, field)
+        if field in _DRIFT_NO_VALUES:
+            raise ConfigResolutionError(f"agent '{ac.name}' {label} drift")
         raise ConfigResolutionError(
-            f"agent '{ac.name}' version drift: config {ac.version}, resolved {spec.version}"
+            f"agent '{ac.name}' {label} drift: config {got}, resolved {want}"
         )
-    if spec.risk_tier != ac.risk_tier:
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' risk-tier drift: config {ac.risk_tier}, resolved {spec.risk_tier}"
-        )
-    if spec.requires_human_approval != ac.requires_human_approval:
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' requires_human_approval drift: config "
-            f"{ac.requires_human_approval}, resolved {spec.requires_human_approval}"
-        )
-    if spec.context_access != ac.context_access:
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' context_access drift: config {ac.context_access}, "
-            f"resolved {spec.context_access}"
-        )
-    if list(spec.tools) != list(ac.tools):
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' tool drift: config {list(ac.tools)}, resolved {list(spec.tools)}"
-        )
-    if spec.model != ac.model:
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' model drift: config {ac.model}, resolved {spec.model}"
-        )
-    if spec.fallback_model != ac.fallback_model:
-        raise ConfigResolutionError(
-            f"agent '{ac.name}' fallback_model drift: config {ac.fallback_model}, "
-            f"resolved {spec.fallback_model}"
-        )
-    if spec.instructions != ac.instructions:
-        raise ConfigResolutionError(f"agent '{ac.name}' instructions drift")
-    if schema_fingerprint(spec.input) != ac.input_schema_hash:
-        raise ConfigResolutionError(f"agent '{ac.name}' input schema drift")
-    if schema_fingerprint(spec.output) != ac.output_schema_hash:
-        raise ConfigResolutionError(f"agent '{ac.name}' output schema drift")
 
 
 def _check_tools_registered(ac: AgentConfig, reg: Any) -> None:

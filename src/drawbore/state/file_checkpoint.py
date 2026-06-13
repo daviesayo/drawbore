@@ -215,6 +215,30 @@ class FileCheckpointStore(CheckpointStore):
     def record_trust(self, run_id: str, step: int, trust: TrustLabel) -> None:
         self._merge_step_record(run_id, step, trust=trust.value)
 
+    def commit_step(
+        self,
+        run_id: str,
+        step: int,
+        *,
+        output: BaseModel,
+        trust: TrustLabel,
+        seal: StepSeal | None = None,
+    ) -> None:
+        """Write output, trust, and (optionally) seal in a single atomic os.replace.
+
+        Overrides the ABC's sequential-call default so that all three fields land
+        in the step file in one ``_merge_step_record`` / ``os.replace`` call.
+        A crash between any two of the individual writes cannot occur.
+        """
+        fields: dict[str, Any] = {
+            "completed": True,
+            "output": output.model_dump(mode="json"),
+            "trust": trust.value,
+        }
+        if seal is not None:
+            fields["seal"] = seal.model_dump(mode="json")
+        self._merge_step_record(run_id, step, **fields)
+
     def trust_of(self, run_id: str, step: int) -> TrustLabel:
         value = self._step_record(run_id, step).get("trust")
         if value is None:

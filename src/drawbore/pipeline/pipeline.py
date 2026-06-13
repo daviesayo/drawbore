@@ -31,7 +31,6 @@ from drawbore.state import (
     EffectLedger,
     ResumeLedger,
     ResumeLedgerBuilder,
-    RunState,
 )
 from drawbore.state.step_seal import diff_seals, field_label, seal_for
 from drawbore.orchestration import LocalEngine, OrchestratorEngine
@@ -99,6 +98,55 @@ class RunResult:
     metrics: "RunMetrics | None" = None
     approval_request: "ApprovalRequest | None" = None
     confinement_receipt: "ConfinementReceipt | None" = None
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    """The run-scoped services and knobs threaded through ``_run_inner``.
+
+    Built once in ``run()`` from its keyword arguments so a new run-scoped
+    dependency extends one type instead of two signatures. Private; ``run()``'s
+    public signature is the stable surface.
+    """
+
+    run_id: str
+    recorder: "AuditRecorder"
+    ledger_builder: "ResumeLedgerBuilder"
+    checkpoints: "CheckpointStore | None" = None
+    identities: "IdentityRegistry | None" = None
+    tenant_id: str | None = None
+    evidence_store: "EvidenceStore | None" = None
+    registry_override: Any | None = None
+    initial_trust: TrustLabel = TrustLabel.TRUSTED
+    approval: "ApprovalDecision | None" = None
+    effect_ledger: "EffectLedger | None" = None
+    max_calls_per_tool: int = 3
+    max_tool_calls_per_run: int = 500
+    max_distinct_tools_per_run: int = 50
+
+
+@dataclass(frozen=True)
+class _ApprovalHalt:
+    """Pending-approval outcome that terminates the run.
+
+    Carries the ``RunResult`` the per-step loop must return immediately. Used
+    for a decision-less re-surface, an id mismatch, a rejection, or a schema
+    violation on the chosen output.
+    """
+
+    result: "RunResult"
+
+
+class _ApprovalCommitted:
+    """Pending-approval outcome that applied a decision and committed the step.
+
+    A module-level singleton (``_APPROVAL_COMMITTED``). The per-step loop, on
+    seeing it, marks the decision consumed and advances; the commit itself
+    already happened inside the handler.
+    """
+
+
+_APPROVAL_COMMITTED = _ApprovalCommitted()
 
 
 class Pipeline:
@@ -437,12 +485,153 @@ class Pipeline:
         outputs[name] = validated_out
         output_trust[name] = trust_value
         if checkpoints is not None:
-            checkpoints.step_succeeded(run_id, idx, validated_out)
-            checkpoints.record_trust(run_id, idx, output_trust[name])
-            checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
+            checkpoints.commit_step(
+                run_id,
+                idx,
+                output=validated_out,
+                trust=output_trust[name],
+                seal=seal_for(step.agent.spec, step.evidence, registry),
+            )
             ledger_builder.executed(idx, name, sealed=True)
         else:
             ledger_builder.executed(idx, name, sealed=False)
+
+    def _handle_pending_approval(
+        self,
+        ctx: _RunContext,
+        *,
+        name: str,
+        idx: int,
+        step: Step,
+        agent_id: "str | None",
+        outputs: dict,
+        output_trust: dict,
+        steps_run: int,
+        escalations: list[EscalationPackage],
+        ledger: TaintLedger,
+        registry: ToolRegistry,
+    ) -> "_ApprovalHalt | _ApprovalCommitted | None":
+        """Pre-execution handler for a step with a pending approval request.
+
+        Runs before the agent executes so a gated side-effecting agent never
+        re-executes on a decision-less poll (no double-fire). Returns:
+
+        - ``_ApprovalHalt(result)`` — the run must terminate with ``result``
+          (a decision-less re-surface, an id mismatch, a rejection, or a schema
+          violation on the chosen output);
+        - ``_APPROVAL_COMMITTED`` — the decision was applied, the step recorded
+          and committed; the caller marks the decision consumed and advances;
+        - ``None`` — no pending request applies to this step (no store wired,
+          no pending request, or it belongs to another step); proceed to
+          normal execution.
+
+        The caller owns the ``approval_consumed`` flag and ``steps_run``: a halt
+        return makes the post-loop unconsumed-decision check moot (the run exits
+        first), so the flag is set only on the committed return — which is the
+        single outcome the post-loop read observes.
+        """
+        checkpoints = ctx.checkpoints
+        if checkpoints is None:
+            return None
+        approval = ctx.approval
+        run_id = ctx.run_id
+        recorder = ctx.recorder
+        ledger_builder = ctx.ledger_builder
+
+        _pending_data = checkpoints.approval_request_of(run_id)
+        pending = (
+            ApprovalRequest.model_validate(_pending_data)
+            if _pending_data is not None else None
+        )
+        if pending is None or pending.step != name:
+            return None
+        if approval is None:
+            # Decision-less resume: re-surface the pending request
+            # WITHOUT re-executing the gated agent (no double-fire).
+            # Surface the request's own reason and a code derived from
+            # it via a CLOSED mapping, so a low-confidence poll reports
+            # the same code as its initial halt. An unknown reason fails
+            # closed with an approval_error halt (never a raw raise that
+            # would escape run() and break the RunResult contract).
+            poll_code = _PENDING_POLL_CODE.get(pending.reason)
+            if poll_code is None:
+                return _ApprovalHalt(self._halt(
+                    outputs, steps_run, escalations, step=name,
+                    reason=(
+                        "approval_error: pending approval request has an "
+                        f"unhandled reason '{pending.reason}'"
+                    ),
+                    received=None, attempted_output=None,
+                    code="approval_error",
+                ))
+            return _ApprovalHalt(self._halt(
+                outputs, steps_run, escalations, step=name,
+                reason=pending.reason,
+                received=None, attempted_output=pending.proposed_output,
+                code=poll_code, approval_request=pending,
+            ))
+        # Decision supplied — apply it (existing id-check / reject /
+        # amend-or-approve / schema-gate / record / full-success-block).
+        if approval.request_id != pending.request_id:
+            return _ApprovalHalt(self._halt(
+                outputs, steps_run, escalations, step=name,
+                reason=(
+                    "approval_error: decision is bound to request "
+                    f"'{approval.request_id}' but the pending request "
+                    f"is '{pending.request_id}'"
+                ),
+                received=None, attempted_output=None,
+                code="approval_error",
+            ))
+        if approval.verdict == "rejected":
+            checkpoints.clear_approval_request(run_id)
+            return _ApprovalHalt(self._halt(
+                outputs, steps_run, escalations, step=name,
+                reason=(
+                    "approval_rejected: reviewer "
+                    f"'{approval.reviewer_id}' rejected the proposed output"
+                    + (f" — {approval.rationale}" if approval.rationale else "")
+                ),
+                received=None, attempted_output=pending.proposed_output,
+                code="approval_rejected",
+            ))
+        chosen = (
+            approval.amended_output if approval.verdict == "amended"
+            else pending.proposed_output
+        )
+        try:
+            validated_out = validate(step.agent.spec.output, chosen)
+        except SchemaValidationError as exc:
+            checkpoints.clear_approval_request(run_id)
+            return _ApprovalHalt(self._halt(
+                outputs, steps_run, escalations, step=name,
+                reason=f"schema_violation: {exc}",
+                received=None, attempted_output=chosen,
+                code="schema_violation",
+            ))
+        checkpoints.clear_approval_request(run_id)
+        original_hash = payload_hash(pending.proposed_output)
+        applied_hash = payload_hash(validated_out.model_dump())
+        recorder.record_step(
+            index=idx, agent=name, version=step.agent.spec.version,
+            agent_id=agent_id, input_hash=None, output_hash=applied_hash,
+            tool_calls=(),
+            human_decision=approval.verdict, reviewer_id=approval.reviewer_id,
+            amendment_original_hash=(
+                original_hash if approval.verdict == "amended" else None
+            ),
+            amendment_applied_hash=(
+                applied_hash if approval.verdict == "amended" else None
+            ),
+        )
+        self._commit_step(
+            outputs=outputs, output_trust=output_trust, name=name,
+            validated_out=validated_out,
+            trust_value=join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx)),
+            checkpoints=checkpoints, run_id=run_id, idx=idx,
+            step=step, registry=registry, ledger_builder=ledger_builder,
+        )
+        return _APPROVAL_COMMITTED
 
     def _evaluate_join(self, node, present, outputs):
         if node.policy == "exactly_one":
@@ -509,22 +698,25 @@ class Pipeline:
             version=self.version, tenant_id=tenant_id,
         )
         ledger_builder = ResumeLedgerBuilder(run_id=resolved_run_id)
+        ctx = _RunContext(
+            run_id=resolved_run_id,
+            recorder=recorder,
+            ledger_builder=ledger_builder,
+            checkpoints=checkpoints,
+            identities=identities,
+            tenant_id=tenant_id,
+            evidence_store=evidence_store,
+            registry_override=registry_override,
+            initial_trust=initial_trust,
+            approval=approval,
+            effect_ledger=effect_ledger,
+            max_calls_per_tool=max_calls_per_tool,
+            max_tool_calls_per_run=max_tool_calls_per_run,
+            max_distinct_tools_per_run=max_distinct_tools_per_run,
+        )
         result: RunResult | None = None
         try:
-            result = await self._run_inner(
-                initial, engine,
-                run_id=resolved_run_id, checkpoints=checkpoints,
-                identities=identities, tenant_id=tenant_id, recorder=recorder,
-                ledger_builder=ledger_builder,
-                evidence_store=evidence_store,
-                registry_override=registry_override,
-                initial_trust=initial_trust,
-                approval=approval,
-                effect_ledger=effect_ledger,
-                max_calls_per_tool=max_calls_per_tool,
-                max_tool_calls_per_run=max_tool_calls_per_run,
-                max_distinct_tools_per_run=max_distinct_tools_per_run,
-            )
+            result = await self._run_inner(initial, engine, ctx)
             return result
         finally:
             # `finally` runs after the return value is evaluated but before the
@@ -579,22 +771,8 @@ class Pipeline:
     async def _run_inner(
         self,
         initial: BaseModel,
-        engine: OrchestratorEngine | None = None,
-        *,
-        run_id: str,
-        checkpoints: CheckpointStore | None = None,
-        identities: IdentityRegistry | None = None,
-        tenant_id: str | None = None,
-        recorder: AuditRecorder,
-        ledger_builder: ResumeLedgerBuilder,
-        evidence_store: EvidenceStore | None = None,
-        registry_override: Any | None = None,
-        initial_trust: TrustLabel = TrustLabel.TRUSTED,
-        approval: "ApprovalDecision | None" = None,
-        effect_ledger: "EffectLedger | None" = None,
-        max_calls_per_tool: int = 3,
-        max_tool_calls_per_run: int = 500,
-        max_distinct_tools_per_run: int = 50,
+        engine: OrchestratorEngine | None,
+        ctx: _RunContext,
     ) -> RunResult:
         """Execute the pipeline (halt-and-escalate default).
 
@@ -608,6 +786,23 @@ class Pipeline:
         invocation; on a resumed run an async escalation delivered in a prior
         attempt is not re-surfaced (its step is skipped as already completed).
         """
+        # Unpack the run context into the local names the scheduler body uses.
+        # Keep this block in sync with the _RunContext fields: a new field added to
+        # the dataclass must be unpacked here (or read via ctx.<field>) to be wired.
+        run_id = ctx.run_id
+        checkpoints = ctx.checkpoints
+        identities = ctx.identities
+        tenant_id = ctx.tenant_id
+        recorder = ctx.recorder
+        ledger_builder = ctx.ledger_builder
+        evidence_store = ctx.evidence_store
+        registry_override = ctx.registry_override
+        initial_trust = ctx.initial_trust
+        approval = ctx.approval
+        effect_ledger = ctx.effect_ledger
+        max_calls_per_tool = ctx.max_calls_per_tool
+        max_tool_calls_per_run = ctx.max_tool_calls_per_run
+        max_distinct_tools_per_run = ctx.max_distinct_tools_per_run
         engine = engine or LocalEngine()
         # A test-mode scoped registry overlay, when supplied, is the SINGLE registry
         # the whole run sees — it must feed both the ToolProxy and the ToolLoopBundle,
@@ -623,8 +818,7 @@ class Pipeline:
                 for s in self.steps
                 if not isinstance(s, JoinNode)
             ):
-                _overlay = ToolRegistry()
-                _overlay._tools.update(registry._tools)
+                _overlay = registry.clone()
                 register_evidence_tool(_overlay, store=evidence_store)
                 registry = _overlay
         # Join indices whose ledger `restored_join` entry was emitted during
@@ -807,8 +1001,9 @@ class Pipeline:
                 steps_run += 1
                 ledger_builder.executed_join(idx, name)
                 if checkpoints is not None:
-                    checkpoints.step_succeeded(run_id, idx, value)
-                    checkpoints.record_trust(run_id, idx, output_trust[name])
+                    checkpoints.commit_step(
+                        run_id, idx, output=value, trust=output_trust[name]
+                    )
                 continue
 
             step = node
@@ -920,105 +1115,22 @@ class Pipeline:
             # handle it before executing the agent (either re-surface the request
             # on a decision-less poll, or apply the decision on a decided resume).
             # This prevents a gated side-effecting agent from re-executing on a
-            # decision-less poll (double-fire).
-            if checkpoints is not None:
-                _pending_data = checkpoints.approval_request_of(run_id)
-                pending = (
-                    ApprovalRequest.model_validate(_pending_data)
-                    if _pending_data is not None else None
-                )
-                if pending is not None and pending.step == name:
-                    if approval is None:
-                        # Decision-less resume: re-surface the pending request
-                        # WITHOUT re-executing the gated agent (no double-fire).
-                        # Surface the request's own reason and a code derived from
-                        # it via a CLOSED mapping, so a low-confidence poll reports
-                        # the same code as its initial halt. An unknown reason fails
-                        # closed with an approval_error halt (never a raw raise that
-                        # would escape run() and break the RunResult contract).
-                        poll_code = _PENDING_POLL_CODE.get(pending.reason)
-                        if poll_code is None:
-                            return self._halt(
-                                outputs, steps_run, escalations, step=name,
-                                reason=(
-                                    "approval_error: pending approval request has an "
-                                    f"unhandled reason '{pending.reason}'"
-                                ),
-                                received=None, attempted_output=None,
-                                code="approval_error",
-                            )
-                        return self._halt(
-                            outputs, steps_run, escalations, step=name,
-                            reason=pending.reason,
-                            received=None, attempted_output=pending.proposed_output,
-                            code=poll_code, approval_request=pending,
-                        )
-                    # Decision supplied — apply it (existing id-check / reject /
-                    # amend-or-approve / schema-gate / record / full-success-block).
-                    if approval.request_id != pending.request_id:
-                        return self._halt(
-                            outputs, steps_run, escalations, step=name,
-                            reason=(
-                                "approval_error: decision is bound to request "
-                                f"'{approval.request_id}' but the pending request "
-                                f"is '{pending.request_id}'"
-                            ),
-                            received=None, attempted_output=None,
-                            code="approval_error",
-                        )
-                    if approval.verdict == "rejected":
-                        checkpoints.clear_approval_request(run_id)
-                        approval_consumed = True
-                        return self._halt(
-                            outputs, steps_run, escalations, step=name,
-                            reason=(
-                                "approval_rejected: reviewer "
-                                f"'{approval.reviewer_id}' rejected the proposed output"
-                                + (f" — {approval.rationale}" if approval.rationale else "")
-                            ),
-                            received=None, attempted_output=pending.proposed_output,
-                            code="approval_rejected",
-                        )
-                    chosen = (
-                        approval.amended_output if approval.verdict == "amended"
-                        else pending.proposed_output
-                    )
-                    try:
-                        validated_out = validate(step.agent.spec.output, chosen)
-                    except SchemaValidationError as exc:
-                        checkpoints.clear_approval_request(run_id)
-                        approval_consumed = True
-                        return self._halt(
-                            outputs, steps_run, escalations, step=name,
-                            reason=f"schema_violation: {exc}",
-                            received=None, attempted_output=chosen,
-                            code="schema_violation",
-                        )
-                    checkpoints.clear_approval_request(run_id)
-                    approval_consumed = True
-                    original_hash = payload_hash(pending.proposed_output)
-                    applied_hash = payload_hash(validated_out.model_dump())
-                    recorder.record_step(
-                        index=idx, agent=name, version=step.agent.spec.version,
-                        agent_id=agent_id, input_hash=None, output_hash=applied_hash,
-                        tool_calls=(),
-                        human_decision=approval.verdict, reviewer_id=approval.reviewer_id,
-                        amendment_original_hash=(
-                            original_hash if approval.verdict == "amended" else None
-                        ),
-                        amendment_applied_hash=(
-                            applied_hash if approval.verdict == "amended" else None
-                        ),
-                    )
-                    self._commit_step(
-                        outputs=outputs, output_trust=output_trust, name=name,
-                        validated_out=validated_out,
-                        trust_value=join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx)),
-                        checkpoints=checkpoints, run_id=run_id, idx=idx,
-                        step=step, registry=registry, ledger_builder=ledger_builder,
-                    )
-                    steps_run += 1
-                    continue
+            # decision-less poll (double-fire). The handler owns the side effects
+            # (clear_approval_request, record, commit); the loop owns the
+            # approval_consumed flag and steps_run so the post-loop unconsumed-
+            # decision check sees True iff a decision was applied here.
+            _approval = self._handle_pending_approval(
+                ctx, name=name, idx=idx, step=step, agent_id=agent_id,
+                outputs=outputs, output_trust=output_trust,
+                steps_run=steps_run, escalations=escalations,
+                ledger=ledger, registry=registry,
+            )
+            if isinstance(_approval, _ApprovalHalt):
+                return _approval.result
+            if _approval is _APPROVAL_COMMITTED:
+                approval_consumed = True
+                steps_run += 1
+                continue
 
             payload = build_input(
                 step.inputs, outputs, initial=initial,

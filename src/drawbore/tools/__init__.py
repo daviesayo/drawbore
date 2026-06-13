@@ -25,7 +25,7 @@ def unclassified_effectful_tools(tool_registry: ToolRegistry) -> tuple[str, ...]
     return tuple(
         sorted(
             name
-            for name, tool in tool_registry._tools.items()
+            for name, tool in tool_registry.tools().items()
             if tool.effectful is True
         )
     )

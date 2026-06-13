@@ -18,6 +18,7 @@ from drawbore.pipeline.binding import From
 from drawbore.pipeline.graph import JoinNode
 from drawbore.pipeline.pipeline import Step
 
+from .._canon import canonical_fingerprint
 from .catalog import AgentCatalog, ref_for
 from .errors import ConfigResolutionError
 from .fingerprint import schema_fingerprint
@@ -89,6 +90,11 @@ def _evidence_config(policy: EvidencePolicy | None) -> EvidencePolicyConfig | No
 
 def _agent_config(agent: Agent, ref: str) -> AgentConfig:
     spec = agent.spec
+    # Materialise each JSON schema once and derive its hash from that dict.
+    # schema_fingerprint(model) is canonical_fingerprint(model.model_json_schema()),
+    # so deriving from the dict here avoids a second model_json_schema() per schema.
+    input_schema = spec.input.model_json_schema()
+    output_schema = spec.output.model_json_schema()
     return AgentConfig(
         name=spec.name,
         ref=ref,
@@ -100,10 +106,10 @@ def _agent_config(agent: Agent, ref: str) -> AgentConfig:
         model=spec.model,
         fallback_model=spec.fallback_model,
         instructions=spec.instructions,
-        input_schema=spec.input.model_json_schema(),
-        output_schema=spec.output.model_json_schema(),
-        input_schema_hash=schema_fingerprint(spec.input),
-        output_schema_hash=schema_fingerprint(spec.output),
+        input_schema=input_schema,
+        output_schema=output_schema,
+        input_schema_hash=canonical_fingerprint(input_schema),
+        output_schema_hash=canonical_fingerprint(output_schema),
     )
 
 

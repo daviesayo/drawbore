@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 from opentelemetry.trace import Status, StatusCode
 
@@ -18,6 +18,22 @@ from ..errors import CircuitBreakerError, TaintError, ToolAccessError, ToolError
 from ..registry import ToolRegistry
 from ..taint import TaintLedger, TrustLabel
 from ..tokens import CapabilityToken, TokenIssuer
+
+
+class ToolCallLogEntry(TypedDict):
+    """Typed shape of every entry appended to :attr:`ToolProxy.log`."""
+
+    tool: str
+    run_id: str
+    operation: str
+    input_hash: str
+    output_hash: str | None
+    duration: float
+    result: str
+    step: int | None
+    scope: str
+    kind: str | None
+    exfil_capable: bool
 
 
 def _denial_label(exc: "ToolError") -> str:
@@ -78,7 +94,7 @@ class ToolProxy:
         # fresh per pipeline.run(), so it only ever serves one run).
         self._run_total: int = 0
         self._run_tools: set[str] = set()
-        self.log: list[dict[str, Any]] = []
+        self.log: list[ToolCallLogEntry] = []
 
     def effects_consumed(self, run_id: str, step: int) -> int:
         """Number of effectful calls the proxy has processed for ``(run_id,
@@ -364,18 +380,17 @@ class ToolProxy:
         exfil_capable: bool,
     ) -> None:
         # input_hash is computed once by invoke and passed in — no re-hash here.
-        self.log.append(
-            {
-                "tool": tool_ref,
-                "run_id": run_id,
-                "operation": operation,
-                "input_hash": input_hash,
-                "output_hash": output_hash,
-                "duration": self._clock() - start,
-                "result": label,
-                "step": step,
-                "scope": scope,
-                "kind": kind,
-                "exfil_capable": exfil_capable,
-            }
-        )
+        entry: ToolCallLogEntry = {
+            "tool": tool_ref,
+            "run_id": run_id,
+            "operation": operation,
+            "input_hash": input_hash,
+            "output_hash": output_hash,
+            "duration": self._clock() - start,
+            "result": label,
+            "step": step,
+            "scope": scope,
+            "kind": kind,
+            "exfil_capable": exfil_capable,
+        }
+        self.log.append(entry)

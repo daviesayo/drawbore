@@ -16,6 +16,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   risk assessment, schema-halt, and a typed redline decision, all under
   `pipeline.test_mode(...)`. Backed by a 10-case acceptance suite
   (`tests/acceptance/test_contract_review.py`).
+- `CheckpointStore.commit_step(...)`: persist a step's output, trust, and seal in
+  one atomic operation. The default delegates to the existing setters; durable
+  stores such as `FileCheckpointStore` override it to a single write, closing the
+  crash window the store's atomicity contract already promised.
+- `ToolRegistry.tools()` returns a read-only view of the registered tools, and
+  `ToolRegistry.clone()` returns an independent copy, so callers no longer reach
+  into private state.
+
+### Changed
+
+- `Tool` now validates `kind` against `{"custom", "builtin", "mcp"}` at
+  construction, failing closed on an unknown kind.
+
+### Removed
+
+- `drawbore.state.RunState` has been removed. It carried no live reads or writes
+  (run-scoped context is carried internally by the orchestrator), so the type was
+  inert. Code that imported it can drop the import.
+
+### Fixed
+
+- The confinement receipt is now minted on every run without exception: if
+  receipt construction itself fails (for example on a malformed tool-call log
+  entry), `mint_receipt` returns a deterministic `unverifiable` receipt naming the
+  failure instead of allowing the run to fall back to no receipt. The
+  fail-closed `unverifiable` verdict is preferred to a silently missing one.
 
 ### Documentation
 

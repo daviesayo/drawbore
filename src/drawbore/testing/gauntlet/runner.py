@@ -21,16 +21,15 @@ _DENIAL = {
 }
 
 
-def _first_denial(audit) -> "Containment | None":
-    """First `-> denied:<x>` label in the audit's tool_calls (by step order). The
-    render format is `"<tool> (<op>) -> <result>"` (pipeline/executor.py:_tool_calls_since)."""
-    if audit is None:
+def _first_denial(result) -> "Containment | None":
+    """First denied:<x> result in RunResult.metrics.tool_calls (chronological proxy order).
+    Reads the already-structured ToolCallMetric.result — no string parsing."""
+    metrics = getattr(result, "metrics", None)
+    if metrics is None:
         return None
-    for step in audit.step_records:
-        for call_str in step.tool_calls:
-            label = call_str.rsplit("-> ", 1)[-1]
-            if label in _DENIAL:
-                return _DENIAL[label]
+    for tc in metrics.tool_calls:
+        if tc.result in _DENIAL:
+            return _DENIAL[tc.result]
     return None
 
 
@@ -40,7 +39,7 @@ def _verdict(result) -> "Containment | None":
     an on_failure policy (which re-labels hard halts as "escalated") doesn't mask it."""
     if result.status == "completed":
         return None
-    denied = _first_denial(result.audit_trace)
+    denied = _first_denial(result)
     if denied is not None:
         return denied
     audit = result.audit_trace

@@ -111,8 +111,8 @@ def test_build_system_is_byte_identical_native_vs_not():
 
 def test_resolve_raises_when_native_unsupported_one_shot(monkeypatch):
     monkeypatch.setattr(
-        "drawbore.llm.runtime.litellm.supports_response_schema",
-        lambda **kw: False,
+        "drawbore.llm.gateway.supports_native_output",
+        lambda model, provider: False,
     )
     rt = LLMRuntime(config=_native_cfg(), gateway=object(), credential_checker=AllAvailable())
     spec = _spec("profile:judgment")
@@ -123,23 +123,23 @@ def test_resolve_raises_when_native_unsupported_one_shot(monkeypatch):
 def test_resolve_passes_when_native_supported_one_shot(monkeypatch):
     seen = []
 
-    def _supports(**kw):
-        seen.append(kw)
+    def _supports(model, provider):
+        seen.append({"model": model, "provider": provider})
         return True
 
-    monkeypatch.setattr("drawbore.llm.runtime.litellm.supports_response_schema", _supports)
+    monkeypatch.setattr("drawbore.llm.gateway.supports_native_output", _supports)
     rt = LLMRuntime(config=_native_cfg(), gateway=object(), credential_checker=AllAvailable())
     chain = rt.resolve(_spec("profile:judgment"))
     assert chain.attempts[0].provider == "anthropic"
-    # exact field mapping: model token AFTER the prefix, provider as custom_llm_provider
-    assert seen == [{"model": "claude-3-5-sonnet-20241022", "custom_llm_provider": "anthropic"}]
+    # exact argument mapping: model token AFTER the prefix, provider as second arg
+    assert seen == [{"model": "claude-3-5-sonnet-20241022", "provider": "anthropic"}]
 
 
 def test_resolve_does_not_block_loop_agent_even_when_unsupported(monkeypatch):
     called = []
     monkeypatch.setattr(
-        "drawbore.llm.runtime.litellm.supports_response_schema",
-        lambda **kw: called.append(kw) or False,
+        "drawbore.llm.gateway.supports_native_output",
+        lambda model, provider: called.append((model, provider)) or False,
     )
     rt = LLMRuntime(config=_native_cfg(), gateway=object(), credential_checker=AllAvailable())
     spec = _spec("profile:judgment", tools=["evidence_retrieve"])
@@ -151,8 +151,8 @@ def test_resolve_does_not_block_loop_agent_even_when_unsupported(monkeypatch):
 def test_resolve_skips_guard_for_providerless_direct_string(monkeypatch):
     called = []
     monkeypatch.setattr(
-        "drawbore.llm.runtime.litellm.supports_response_schema",
-        lambda **kw: called.append(kw) or False,
+        "drawbore.llm.gateway.supports_native_output",
+        lambda model, provider: called.append((model, provider)) or False,
     )
     rt = LLMRuntime.from_gateway(object())  # empty config: no providers
     chain = rt.resolve(_spec("gpt-4o"))     # providerless direct string
