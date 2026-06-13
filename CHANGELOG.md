@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Run-level circuit-breaker caps: two always-on limits bound a run's aggregate
+  tool activity across every step and agent — `max_tool_calls_per_run` (total
+  admitted tool calls per run, default 500) and `max_distinct_tools_per_run`
+  (distinct tool names admitted per run, default 50). Both are tunable tighter
+  via `pipeline.run(...)` kwargs but cannot be disabled. A breach halts with
+  `halt_code == "circuit_breaker"` (proxy-log `"denied:breaker"`), the same
+  vocabulary as the existing per-step-per-tool breaker; the legible `reason`
+  string names which cap tripped. `max_calls_per_tool` (per-step-per-tool cap,
+  default 3) is now also a `pipeline.run(...)` kwarg, making all three
+  circuit-breaker limits tunable at call time.
+
 - Provider-native structured output: a new opt-in `ProviderConfig.native_structured_output`
   flag (default `False`) wires each agent's output schema into the provider's native
   constrained-decoding mode on the one-shot model path, so the model returns
