@@ -769,11 +769,25 @@ class Pipeline:
                 seed = initial_trust
             ledger.seed(run_id, idx, seed)
 
-            # Decision branch: if a human approval decision was supplied and this
-            # step has a pending request, apply it here without re-executing the agent.
-            if approval is not None and checkpoints is not None:
+            # Pre-execution handler: if this step has a pending approval request,
+            # handle it before executing the agent (either re-surface the request
+            # on a decision-less poll, or apply the decision on a decided resume).
+            # This prevents a gated side-effecting agent from re-executing on a
+            # decision-less poll (double-fire).
+            if checkpoints is not None:
                 pending = checkpoints.approval_request_of(run_id)
                 if pending is not None and pending.step == name:
+                    if approval is None:
+                        # Decision-less resume: re-surface the pending request
+                        # WITHOUT re-executing the gated agent (no double-fire).
+                        return self._halt(
+                            outputs, steps_run, escalations, step=name,
+                            reason="requires_human_approval",
+                            received=None, attempted_output=pending.proposed_output,
+                            code="requires_human_approval", approval_request=pending,
+                        )
+                    # Decision supplied — apply it (existing id-check / reject /
+                    # amend-or-approve / schema-gate / record / full-success-block).
                     if approval.request_id != pending.request_id:
                         return self._halt(
                             outputs, steps_run, escalations, step=name,
@@ -830,7 +844,7 @@ class Pipeline:
                         ),
                     )
                     outputs[name] = validated_out
-                    output_trust[name] = ledger.scope(run_id, idx)
+                    output_trust[name] = join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx))
                     checkpoints.step_succeeded(run_id, idx, validated_out)
                     checkpoints.record_trust(run_id, idx, output_trust[name])
                     checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
@@ -916,28 +930,25 @@ class Pipeline:
                         )
 
             # Explicit human-approval gate — always a synchronous gate.
+            # The pre-execution handler above owns all reuse logic; this block
+            # always mints a fresh request (a second mint on a store-less run
+            # is info-only — no decision can arrive without a store).
             if step.agent.spec.requires_human_approval:
-                pending = (
-                    checkpoints.approval_request_of(run_id)
-                    if checkpoints is not None else None
+                request = ApprovalRequest(
+                    request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+                    question=f"Approve the proposed output of step '{name}'?",
+                    reason="requires_human_approval",
+                    package_legible=build_escalation(
+                        step=name, reason="requires_human_approval",
+                        received=outcome.validated_input,
+                        attempted_output=validated_out,
+                        trace=tuple(outputs.keys()), agent_id=agent_id,
+                    ).legible(),
+                    proposed_output=validated_out.model_dump(mode="json"),
+                    proposed_output_trust=ledger.scope(run_id, idx).value,
                 )
-                if pending is not None and pending.step == name:
-                    request = pending
-                else:
-                    request = ApprovalRequest(
-                        request_id=uuid.uuid4().hex, run_id=run_id, step=name,
-                        question=f"Approve the proposed output of step '{name}'?",
-                        reason="requires_human_approval",
-                        package_legible=build_escalation(
-                            step=name, reason="requires_human_approval",
-                            received=outcome.validated_input,
-                            attempted_output=validated_out,
-                            trace=tuple(outputs.keys()), agent_id=agent_id,
-                        ).legible(),
-                        proposed_output=validated_out.model_dump(mode="json"),
-                    )
-                    if checkpoints is not None:
-                        checkpoints.record_approval_request(run_id, request)
+                if checkpoints is not None:
+                    checkpoints.record_approval_request(run_id, request)
                 return self._halt(
                     {**outputs, name: validated_out}, steps_run + 1, escalations,
                     step=name, reason="requires_human_approval",

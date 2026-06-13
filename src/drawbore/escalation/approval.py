@@ -28,6 +28,9 @@ class ApprovalRequest(BaseModel):
     reason: str
     package_legible: str
     proposed_output: dict[str, Any]
+    # The step's post-execution trust label, restored on approval so an
+    # approved/amended output is never less tainted than the original.
+    proposed_output_trust: str
 
 
 class ApprovalDecision(BaseModel):

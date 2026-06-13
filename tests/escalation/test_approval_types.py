@@ -11,6 +11,7 @@ def test_request_is_json_safe():
         reason="requires_human_approval",
         package_legible="Run stopped at step 'risk_scorer'.",
         proposed_output={"risk_level": "low", "confidence": 0.95, "factors": []},
+        proposed_output_trust="trusted",
     )
     dumped = req.model_dump(mode="json")
     assert dumped["proposed_output"]["confidence"] == 0.95
@@ -21,7 +22,8 @@ def test_request_forbids_unknown_fields():
     with pytest.raises(ValidationError):
         ApprovalRequest(
             request_id="x", run_id="r", step="s", question="q", reason="r",
-            package_legible="p", proposed_output={}, extra_field=1,
+            package_legible="p", proposed_output={}, proposed_output_trust="trusted",
+            extra_field=1,
         )
 
 

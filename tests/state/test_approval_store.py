@@ -6,7 +6,7 @@ def _req(request_id="req-1"):
     return ApprovalRequest(
         request_id=request_id, run_id="r-1", step="scorer", question="ok?",
         reason="requires_human_approval", package_legible="stopped",
-        proposed_output={"x": 1},
+        proposed_output={"x": 1}, proposed_output_trust="trusted",
     )
 
 
