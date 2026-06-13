@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pipeline.test_mode(...)`. Backed by a 10-case acceptance suite
   (`tests/acceptance/test_contract_review.py`).
 
+### Documentation
+
+- Reliability guide now documents that schema fingerprints (drift detection,
+  authority diff, re-attestation) can change across Pydantic minor versions, with
+  guidance to pin the Pydantic minor in deployments that persist checkpoints or
+  manifests and to recompute fingerprints after a Pydantic upgrade.
+
 ## [0.8.0] - 2026-06-13
 
 ### Changed
