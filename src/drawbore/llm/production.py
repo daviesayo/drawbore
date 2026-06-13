@@ -50,6 +50,14 @@ class ProductionLLMGateway(LLMGateway):
                 base_kwargs["timeout"] = provider_cfg.timeout_seconds
             for k, v in provider_cfg.extra.items():
                 base_kwargs.setdefault(k, v)
+        # Provider-native structured output: when the runtime resolved a native-enabled
+        # provider it set request.output_format to the agent's output class. Assign it
+        # DIRECTLY into base_kwargs (NOT as a one-off kwarg at the call) and AFTER the
+        # extra loop so it wins unconditionally AND the _reask closure's dict(base_kwargs)
+        # inherits it — otherwise the corrective reprompt would silently lose native
+        # constraint. Gate only on output_format (the runtime sets it under native only).
+        if request.output_format is not None:
+            base_kwargs["response_format"] = request.output_format
         # Route the 200 through the shared structured-output boundary: a single bounded
         # CORRECTIVE reprompt on a side-effect-free absent body (null / empty / non-JSON
         # — the transient class a re-ask routinely clears), an immediate fail-closed on

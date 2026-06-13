@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Provider-native structured output: a new opt-in `ProviderConfig.native_structured_output`
+  flag (default `False`) wires each agent's output schema into the provider's native
+  constrained-decoding mode on the one-shot model path, so the model returns
+  schema-valid JSON by construction (typically eliminating corrective reprompts). It is
+  a reliability fast-path, not a safety control: the authoritative output-schema gate
+  and the corrective-reprompt boundary are unchanged and remain the sole arbiters of a
+  `schema_violation` halt. Enabling it for a provider/model that does not support native
+  schema decoding is caught fail-closed at resolve time (`model_config_error`). Scope is
+  the one-shot model path; the model+tools loop is not covered yet. Setting both
+  `native_structured_output=True` and a `response_format` key in `ProviderConfig.extra`
+  is rejected at config-construction time.
 - Confinement receipt: `RunResult.confinement_receipt` carries a `ConfinementReceipt`
   on every run (success or halt), binding the run's declared capability footprint to
   its observed proxy enforcement. `from drawbore.confinement import verify` re-checks

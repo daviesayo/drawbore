@@ -98,7 +98,20 @@ class ProviderConfig(BaseModel):
     credential_env: str | None = None
     base_url: str | None = None
     timeout_seconds: float | None = None
+    native_structured_output: bool = False
     extra: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _reject_native_response_format_collision(self):
+        # Native mode auto-wires each agent's output schema as ``response_format``; a
+        # ``response_format`` key in ``extra`` would be the only thing that could collide.
+        # Reject both-set at construction (fail-closed) instead of silently dropping one.
+        if self.native_structured_output and "response_format" in self.extra:
+            raise ValueError(
+                "native_structured_output=True cannot be combined with a "
+                "'response_format' key in extra; native mode owns response_format"
+            )
+        return self
 
 
 class LLMRuntimeConfig(BaseModel):

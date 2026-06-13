@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+import litellm
+
 from drawbore.errors import DrawboreError
 
 from .attempts import ModelAttemptAudit, ModelAudit
@@ -61,8 +63,32 @@ class LLMRuntime:
         )
 
     def resolve(self, spec) -> ResolvedModelChain:
-        """Resolve the agent's declared model(s) to a concrete chain."""
-        return resolve_chain(spec, self.config, credential_checker=self.credential_checker)
+        """Resolve the agent's declared model(s) to a concrete chain.
+
+        For a ONE-SHOT agent (``not spec.tools``) whose resolved provider has
+        ``native_structured_output=True``, fail closed at resolve time if the
+        provider/model does not support native schema-constrained decoding — a
+        misconfiguration caught before any model call, never a silent fallback.
+        The ``not spec.tools`` gate is load-bearing: native output applies only to
+        the one-shot path, so a model+tools loop agent is never blocked here.
+        """
+        chain = resolve_chain(spec, self.config, credential_checker=self.credential_checker)
+        if not spec.tools:
+            for attempt in chain.attempts:
+                if attempt.provider is None:
+                    continue  # providerless direct string → no provider config → no guard
+                provider_cfg = self.config.providers.get(attempt.provider)
+                if provider_cfg is None or not provider_cfg.native_structured_output:
+                    continue
+                if not litellm.supports_response_schema(
+                    model=attempt.model, custom_llm_provider=attempt.provider
+                ):
+                    raise LLMConfigError(
+                        f"native structured output enabled for model "
+                        f"{attempt.model!r} on provider {attempt.provider!r}, which "
+                        f"does not support it"
+                    )
+        return chain
 
     async def complete(self, spec, payload, chain: ResolvedModelChain) -> ModelResponse:
         """Walk ``chain`` calling the gateway once per attempt: fall back on a
@@ -72,7 +98,14 @@ class LLMRuntime:
         ``ModelResponse`` carrying a full ``ModelAudit``."""
         audits: list[ModelAttemptAudit] = []
         for i, attempt in enumerate(chain.attempts):
-            request = build_model_request(spec, payload, model_chain=(attempt.request_model,))
+            native = bool(
+                attempt.provider
+                and (pc := self.config.providers.get(attempt.provider))
+                and pc.native_structured_output
+            )
+            request = build_model_request(
+                spec, payload, model_chain=(attempt.request_model,), native=native
+            )
             try:
                 response = await self.gateway.complete(request)
             except LLMError:

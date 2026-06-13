@@ -8,6 +8,7 @@ rewrite a request without reaching into any engine.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .attempts import ModelAudit  # acyclic: attempts imports only stdlib
 from .usage import TokenUsage  # acyclic: usage imports only stdlib
@@ -18,11 +19,15 @@ class ModelRequest:
     """A single non-streaming model call. ``system`` carries the agent's
     instructions plus the JSON output contract; ``user`` is the validated input
     rendered as data; ``model_chain`` is the resolved primary-then-fallback chain.
+    ``output_format`` is the agent's output Pydantic class when provider-native
+    structured output is enabled (else ``None``); it is typed loosely to avoid
+    importing the agent layer and is never serialized.
     """
 
     system: str
     user: str
     model_chain: tuple[str, ...]
+    output_format: Any | None = None
 
 
 @dataclass(frozen=True)

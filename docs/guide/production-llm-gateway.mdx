@@ -96,6 +96,43 @@ The one-shot side of the contract, for a model with no tools:
 | Unreadable provider response shape | **Halted** immediately (`model_error`), no reprompt. |
 | Still no usable object **after** the one reprompt | **Halted** (`model_error`) with a bounded excerpt. |
 
+**Provider-native structured output (opt-in fast-path).** Modern providers can
+constrain decoding to a JSON schema natively, so the model returns schema-valid JSON by
+construction. Set `native_structured_output=True` on a provider's `ProviderConfig` and
+Drawbore wires *each agent's own output schema* into the provider's native mode for
+one-shot model steps — typically driving corrective reprompts to zero:
+
+```python
+from drawbore.llm import ProviderConfig
+
+ProviderConfig(
+    credential_env="OPENAI_API_KEY",
+    native_structured_output=True,   # auto-wires each agent's output schema
+)
+```
+
+This is a **reliability optimization, not a safety control**. The structured-output
+boundary above is unchanged and stays authoritative: a native response is just a clean
+object the same boundary accepts on the first try, and if a provider ever returns
+off-schema output the same corrective reprompt and the same `schema_violation` gate
+catch it exactly as without native mode. Native mode can only reduce reprompts; it can
+never weaken the gate. The system-prompt schema instruction is also kept alongside the
+native request as belt-and-suspenders.
+
+Scope and rules:
+
+- **One-shot only.** The model+tools loop is not covered yet; enabling native mode never
+  blocks or alters a loop agent.
+- **Fail-closed support check.** If you enable native mode for a provider/model that does
+  not support native schema decoding, the run halts `model_config_error` at resolve time
+  — before any model call — rather than silently degrading.
+- **No double-declaring `response_format`.** Setting both `native_structured_output=True`
+  and a `response_format` key in `extra` is rejected when the config is constructed;
+  native mode owns `response_format`.
+- **Known limitation.** Because the schema instruction is kept in the prompt *and* sent
+  as native `response_format`, a few providers in strict mode may slightly penalize the
+  schema appearing in both places.
+
 The loop side of the same boundary (the tool-call and final-answer turns) is in
 [Agentic tool loop](/guide/agentic-tool-loop). A tool-loop step is never re-run
 wholesale, because replaying a loop could replay tool side effects; its single reprompt
