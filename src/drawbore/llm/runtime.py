@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-import litellm
-
 from drawbore.errors import DrawboreError
 
 from .attempts import ModelAttemptAudit, ModelAudit
@@ -21,6 +19,7 @@ from .classify import classify_provider_exception
 from .config import LLMRuntimeConfig
 from .credentials import CredentialChecker, EnvCredentialChecker, NullCredentialChecker
 from .errors import LLMConfigError, LLMError, ModelUnavailableError
+from . import gateway as _gateway
 from .gateway import LLMGateway
 from .production import ProductionLLMGateway
 from .request import ModelResponse
@@ -73,9 +72,7 @@ class LLMRuntime:
                 provider_cfg = self.config.providers.get(attempt.provider)
                 if provider_cfg is None or not provider_cfg.native_structured_output:
                     continue
-                if not litellm.supports_response_schema(
-                    model=attempt.model, custom_llm_provider=attempt.provider
-                ):
+                if not _gateway.supports_native_output(attempt.model, attempt.provider):
                     raise LLMConfigError(
                         f"native structured output enabled for model "
                         f"{attempt.model!r} on provider {attempt.provider!r}, which "

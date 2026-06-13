@@ -20,6 +20,15 @@ from .structured_output import OneShotBudget, coerce_structured_output
 from .usage import extract_cost, extract_usage
 
 
+def supports_native_output(model: str, provider: str) -> bool:
+    """Check whether ``provider`` + ``model`` supports schema-constrained decoding.
+
+    Delegates to the provider SDK; isolated here so callers outside ``gateway``
+    can monkeypatch a single seam without touching the SDK directly.
+    """
+    return litellm.supports_response_schema(model=model, custom_llm_provider=provider)
+
+
 def configure_provider_logging() -> None:
     """Silence the provider SDK's unsolicited debug printing.
 
