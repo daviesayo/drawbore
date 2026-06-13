@@ -1,0 +1,142 @@
+---
+title: "Confinement receipt"
+description: "An offline, independently-verifiable attestation that a run stayed within its declared tool authority and never exfiltrated under untrusted data."
+---
+
+**When to use this:** you need to demonstrate to a regulator, auditor, or compliance
+team that a specific run was confined — not because you trust the runtime's logs, but
+because the claim can be checked independently, without re-running the pipeline and
+without trusting Drawbore. A `ConfinementReceipt` is proof, not logs or inference.
+
+A receipt is minted automatically at the end of **every** run — success or halt. It
+binds the pipeline's declared capability footprint (the set of `(agent, tool, scope)`
+facts the run was allowed to exercise) to the proxy's observed enforcement log and
+re-checks both confinement invariants offline.
+
+## Quick example
+
+```python
+import asyncio
+from drawbore.confinement import verify
+
+result = await pipeline.run(initial)
+
+receipt = result.confinement_receipt
+verdict = verify(receipt)
+print(verdict.status)          # "confined" | "breached" | "unverifiable"
+print(receipt.legible())       # regulator-readable block
+```
+
+To bind the receipt to the actual execution log (the strongest check), pass the
+proxy log as a second argument:
+
+```python
+verdict = verify(receipt, result.proxy_log)
+print(verdict.status)          # re-derives the verdict from the live log
+```
+
+## The three verdict statuses
+
+`verify` returns a `ConfinementVerdict` with a `status` field:
+
+- **`confined`** — every executed tool call mapped to a declared capability, and no
+  exfil-capable tool fired under untrusted data. The run was contained.
+- **`breached`** — at least one executed call fell outside the declared footprint, or
+  an exfil-capable tool ran under an untrusted taint scope. `verdict.breaches` names
+  each offending call.
+- **`unverifiable`** — the evidence is insufficient to prove containment. Possible
+  causes: the footprint could not be derived, a tool call could not be attributed to
+  an agent, or the receipt's fingerprint does not match. Fail closed: insufficient
+  evidence is never treated as confined.
+
+Verdict precedence is `unverifiable > breached > confined`. A `denied:*` proxy entry
+(a scope denial, taint denial, token denial, or circuit-breaker trip) is **not** a
+breach — it is evidence a control fired, which strengthens the proof.
+
+## What `verify` proves
+
+`verify(receipt)` alone re-derives the receipt's SHA-256 fingerprint from its
+embedded fields and re-evaluates the confinement invariants over the embedded
+observed calls. This proves **tamper-evidence**: the artifact has not been edited
+since it was minted — any change to the receipt fields changes the fingerprint and
+returns `unverifiable`.
+
+`verify(receipt, proxy_log)` additionally re-derives the observed calls from the
+live proxy log and asserts they equal the embedded calls. This proves **log
+binding**: the receipt matches the actual execution, not a substituted or redacted
+log.
+
+The independence is verifier-vs-runtime: an auditor re-derives the verdict from the
+evidence using the same deterministic rules that minted it, without trusting the
+runtime and without re-running the pipeline. This is the regulatory value of the
+receipt.
+
+## Honesty clause
+
+The receipt is **verifiable, not cryptographically signed**. The SHA-256
+fingerprint makes any tamper to the receipt or the log detectable by re-derivation.
+Non-repudiable signing (Ed25519) is a managed-service feature, not part of the MIT
+core.
+
+For a correctly-functioning runtime the verdict is always `confined` — the proxy
+already prevents out-of-footprint and exfil-under-untrusted-scope calls. `breached`
+surfaces a runtime defect or tampering; that is exactly what a regulatory attestation
+is meant to catch.
+
+## `run_id` and per-run identity
+
+`ConfinementReceipt.run_id` comes from the `run_id` you pass to `pipeline.run()`.
+If you do not pass one, it defaults to a non-unique `"<pipeline-name>-run"`. Pass an
+explicit unique identifier (a UUID, a request id, a job id) so each receipt has an
+independent, addressable identity:
+
+```python
+import uuid
+result = await pipeline.run(initial, run_id=str(uuid.uuid4()))
+```
+
+## Distinguishing the two `status` fields
+
+`ConfinementReceipt` and `ConfinementVerdict` each have a `status` field; they mean
+different things:
+
+- `ConfinementReceipt.status` — the **run** outcome: `"completed"`, `"halted"`, or
+  `"escalated"`.
+- `ConfinementVerdict.status` — the **confinement** verdict: `"confined"`,
+  `"breached"`, or `"unverifiable"`.
+
+A halted run (for example, a schema violation) produces a receipt with
+`status="halted"` and can still have `verdict.status="confined"` if the tool calls
+that did execute stayed within the declared footprint.
+
+## API reference
+
+**`ConfinementReceipt`** — the self-contained attestation artifact on
+`RunResult.confinement_receipt`. Always present. Fields: `run_id`, `status`
+(run status), `footprint_fingerprint` (SHA-256 of the declared capability facts),
+`declared_facts`, `step_agents`, `observed_calls`, `verdict`, `receipt_fingerprint`.
+Call `.legible()` for a regulator-readable, single-block account.
+
+**`ObservedCall`** — one proxy-log entry as the receipt records it. Fields: `step`,
+`agent`, `tool_ref`, `operation`, `match_kind` (`"tool"` / `"evidence"` / `None`),
+`result`, `taint_scope`, `exfil_capable`, `input_hash`, `output_hash`.
+`match_kind` is for legibility only; confinement matching is on `(agent, tool_ref)`.
+
+**`ConfinementVerdict`** — the confinement outcome. Fields: `status`
+(`"confined"` / `"breached"` / `"unverifiable"`), `confined` (bool, always equals
+`status == "confined"`), `breaches` (tuple of strings naming each breach),
+`unverifiable` (tuple of strings naming each unverifiable reason).
+
+**`verify(receipt, proxy_log=None) -> ConfinementVerdict`** — offline verifier.
+Never raises; returns `unverifiable` on any error. Import from `drawbore.confinement`.
+
+```python
+from drawbore.confinement import verify
+```
+
+---
+
+For the declared capability footprint that the receipt checks against, see
+[Authority regression checks](/guide/authority-regression).
+For the taint invariant the receipt binds to observed enforcement, see
+[Taint and trust](/guide/taint-and-trust).

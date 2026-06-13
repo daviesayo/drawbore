@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Confinement receipt: `RunResult.confinement_receipt` carries a `ConfinementReceipt`
+  on every run (success or halt), binding the run's declared capability footprint to
+  its observed proxy enforcement. `from drawbore.confinement import verify` re-checks
+  both confinement invariants offline — `verify(receipt)` proves tamper-evidence
+  (SHA-256 fingerprint re-derives); `verify(receipt, proxy_log)` additionally binds
+  the receipt to the actual execution log. Verdict is `"confined"`, `"breached"`, or
+  `"unverifiable"` (fail closed). The receipt is verifiable, not cryptographically
+  signed — non-repudiable signing is a managed-service feature.
+
 - Durable human-approval storage. `FileCheckpointStore` now persists a pending
   `ApprovalRequest` to disk, so a typed-approval cycle (or a resumable
   low-confidence halt) survives a process restart and resumes without
