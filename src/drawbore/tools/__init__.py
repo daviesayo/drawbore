@@ -17,12 +17,9 @@ from .tokens import CapabilityToken, TokenIssuer
 
 
 def unclassified_effectful_tools(tool_registry: ToolRegistry) -> tuple[str, ...]:
-    """Return a sorted tuple of tool refs in ``tool_registry`` whose
-    ``effectful`` field is still the default ``True``.
-
-    Use as a CI helper to flag tools that may need an explicit
-    ``effectful=False`` declaration (pure-read tools that should not be
-    ledgered or replayed on resume).
+    """Return a sorted tuple of tool refs in ``tool_registry`` currently
+    marked ``effectful=True`` (the default), as candidates to review and
+    mark ``effectful=False`` if they are pure reads.
     """
     return tuple(
         sorted(

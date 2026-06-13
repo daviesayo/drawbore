@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `drawbore.tools`) returns a stable per-call hex key inside an effectful handler
   for forwarding to remote systems (e.g. a Stripe `Idempotency-Key` header).
   `unclassified_effectful_tools(registry)` (also from `drawbore.tools`) returns
-  a sorted tuple of tools still at the default `effectful=True`, suitable as a
-  CI assertion. Three new halt codes: `effect_divergence` (resumed call sequence
+  a sorted tuple of all tools currently marked `effectful=True` (the default),
+  as candidates to review and mark `effectful=False` if they are pure reads. Three new halt codes: `effect_divergence` (resumed call sequence
   diverged from recorded), `effect_unresolved` (a PENDING entry was found on
   resume — framework cannot prove exactly-once), and `effect_ledger_error` (a
   durable ledger write failed). The `evidence://retrieve` builtin is registered

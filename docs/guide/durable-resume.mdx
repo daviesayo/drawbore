@@ -181,8 +181,9 @@ the ledger:
 - **Entry found, `PENDING`** — the handler fired but the ledger's confirmation
   write was lost in the crash. The framework cannot prove the call succeeded
   exactly once, so it halts `effect_unresolved` fail-closed. The recorded
-  idempotency key lets an operator verify the outcome against the remote system
-  before clearing the entry and retrying.
+  idempotency key lets an operator verify the outcome against the remote system.
+  Resolving a pending entry (clearing or voiding it) is not yet part of the
+  public API; the run halts for human reconciliation.
 - **Divergence** — a call at a recorded position does not match what was
   recorded (different tool or different arguments), or the resuming step fires
   fewer effectful calls than were recorded (skipping a previously-fired effect).
@@ -251,8 +252,8 @@ unclassified = unclassified_effectful_tools(registry)
 assert not unclassified, f"tools still at default effectful=True: {unclassified}"
 ```
 
-This flags tools that have never been explicitly classified — a signal to decide
-whether they warrant ledger overhead or can be marked `effectful=False`.
+This returns all tools currently marked effectful (the default), as candidates
+to review and mark `effectful=False` if they are pure reads.
 
 ## Common mistakes
 
