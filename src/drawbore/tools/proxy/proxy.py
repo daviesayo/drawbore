@@ -42,10 +42,22 @@ class ToolProxy:
         *,
         ledger: "TaintLedger | None" = None,
         effect_ledger: "EffectLedger | None" = None,
+        max_tool_calls_per_run: int = 500,
+        max_distinct_tools_per_run: int = 50,
     ):
+        if max_tool_calls_per_run < 1:
+            raise ValueError(
+                f"max_tool_calls_per_run must be >= 1, got {max_tool_calls_per_run}"
+            )
+        if max_distinct_tools_per_run < 1:
+            raise ValueError(
+                f"max_distinct_tools_per_run must be >= 1, got {max_distinct_tools_per_run}"
+            )
         self._registry = registry
         self._issuer = issuer
         self._max = max_calls_per_tool
+        self._max_tool_calls_per_run = max_tool_calls_per_run
+        self._max_distinct_tools_per_run = max_distinct_tools_per_run
         self._clock = clock
         self._ledger = ledger if ledger is not None else TaintLedger()
         # Durable effect ledger (exactly-once replay on resume). None ⇒ no
@@ -58,6 +70,10 @@ class ToolProxy:
         self._effect_cursor: dict[tuple[str, int], int] = {}
         # Circuit breaker is per (run, agent-step, tool) — audit H1.
         self._counts: dict[tuple[str, Any, str], int] = {}
+        # Run-level circuit-breaker state (scalar — the proxy is constructed
+        # fresh per pipeline.run(), so it only ever serves one run).
+        self._run_total: int = 0
+        self._run_tools: set[str] = set()
         self.log: list[dict[str, Any]] = []
 
     def effects_consumed(self, run_id: str, step: int) -> int:
@@ -139,6 +155,27 @@ class ToolProxy:
                         f"tool '{tool_ref}' called more than {self._max} times by "
                         f"step {step} in run '{run_id}'"
                     )
+                # 5b. Run-level circuit-breaker caps (siblings of the per-step
+                # breaker; only reached by calls that passed all prior gates).
+                # Both predicates are evaluated BEFORE either counter is
+                # committed — a breaching call pollutes neither (check-before-
+                # commit, intentional asymmetry with the per-step breaker above).
+                # Total is checked first (declared ordering), then distinct.
+                _is_new_tool = tool_ref not in self._run_tools
+                if self._run_total + 1 > self._max_tool_calls_per_run:
+                    raise CircuitBreakerError(
+                        f"run '{run_id}' exceeded the max-tool-calls-per-run cap "
+                        f"(cap {self._max_tool_calls_per_run})"
+                    )
+                if _is_new_tool and len(self._run_tools) + 1 > self._max_distinct_tools_per_run:
+                    raise CircuitBreakerError(
+                        f"run '{run_id}' exceeded the max-distinct-tools-per-run cap "
+                        f"(cap {self._max_distinct_tools_per_run}); "
+                        f"blocked new tool '{tool_ref}'"
+                    )
+                # Both caps passed — commit run-level state.
+                self._run_total += 1
+                self._run_tools.add(tool_ref)
                 # 6. Execute. The effect ledger wraps ONLY the handler call;
                 #    every gate above ran first and unchanged, so a denied call
                 #    never leaves a phantom pending entry and the taint/token/

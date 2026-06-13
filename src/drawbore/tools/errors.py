@@ -17,7 +17,22 @@ class TokenError(ToolError):
 
 
 class CircuitBreakerError(ToolError):
-    """An agent exceeded the allowed number of calls to a tool within one run."""
+    """A circuit-breaker cap was exceeded, halting the call before it reached the handler.
+
+    Covers two distinct breaker levels, both raising this error and logging
+    ``denied:breaker``:
+
+    - **Per-step / per-tool** (``max_calls_per_tool``): an agent called the same
+      tool more than the allowed number of times within a single pipeline step.
+    - **Run-level total** (``max_tool_calls_per_run``): the total number of
+      admitted tool calls across all steps of the run exceeded the run cap.
+    - **Run-level distinct** (``max_distinct_tools_per_run``): the run attempted
+      to invoke more distinct tool refs than the run cap allows.
+
+    The halt code in all cases is ``circuit_breaker`` (``denied:breaker`` in the
+    proxy log). Distinguishing per-step from run-level breaches requires reading
+    the legible error message attached to the exception.
+    """
 
 
 # A ToolError so the proxy denial path and model-loop abort handle it uniformly;
