@@ -14,7 +14,9 @@ import json
 from .request import ModelRequest
 
 
-def build_model_request(spec, payload, *, model_chain: tuple[str, ...]) -> ModelRequest:
+def build_model_request(
+    spec, payload, *, model_chain: tuple[str, ...], native: bool = False
+) -> ModelRequest:
     """Assemble the non-streaming model request for a model-backed agent.
 
     The system message carries the agent's instructions and the JSON output
@@ -37,4 +39,11 @@ def build_model_request(spec, payload, *, model_chain: tuple[str, ...]) -> Model
         + output_schema
     )
     user = json.dumps(payload.model_dump(), sort_keys=True)
-    return ModelRequest(system=system, user=user, model_chain=model_chain)
+    # When ``native`` is set, carry the output class so the gateway can request
+    # provider-constrained decoding. The system-prompt schema instruction above is
+    # UNCHANGED in both cases (belt-and-suspenders): ``system`` is byte-identical
+    # whether or not native mode is on.
+    output_format = spec.output if native else None
+    return ModelRequest(
+        system=system, user=user, model_chain=model_chain, output_format=output_format
+    )
