@@ -1,0 +1,177 @@
+---
+title: "Human approval"
+description: "Resume a gated pipeline with a typed, schema-validated human decision."
+---
+
+**When to use this:** a step marked `requires_human_approval` should pause for a
+human, and you want the decision to be a typed, audited artifact — approve, amend,
+or reject — not a bare boolean, with the pipeline's safety gates still authoritative
+over whatever the human submits.
+
+## Declaring a gated agent
+
+```python
+from drawbore import Pipeline, agent
+from drawbore.state import InMemoryCheckpointStore
+
+@agent(input=OrderInput, output=RiskScore, requires_human_approval=True)
+async def risk_assessor(order: OrderInput) -> RiskScore:
+    ...
+
+pipeline = Pipeline()
+pipeline.add(risk_assessor)
+
+store = InMemoryCheckpointStore()
+```
+
+A gated agent does not have to be model-backed. The `requires_human_approval`
+flag applies to any agent — deterministic or model-driven.
+
+## How the two-phase cycle works
+
+A gated step splits execution across two separate `pipeline.run(...)` calls. The
+first call produces an `ApprovalRequest` stored in the checkpoint; the second
+delivers a typed `ApprovalDecision` and the run continues (or ends, on rejection).
+
+### Phase 1 — run until the gate
+
+```python
+result = await pipeline.run(
+    initial,
+    run_id="order-A-1",
+    checkpoints=store,
+)
+# result.status == "halted"
+# result.halt_code == "requires_human_approval"
+# result.approval_request is the typed request to hand to a reviewer
+request = result.approval_request
+print(request.question)         # readable description of what is being asked
+print(request.package_legible)  # the full escalation package, as legible text
+```
+
+The run halts before executing the gated step. Steps that completed before the
+gate are checkpointed; they are not re-executed on the next call.
+
+### Phase 2 — deliver the decision
+
+```python
+from drawbore.escalation import ApprovalDecision
+
+# ---- approve as-is ----
+decision = ApprovalDecision(
+    request_id=request.request_id,
+    verdict="approved",
+    reviewer_id="alice@example.com",
+)
+
+result = await pipeline.run(
+    initial,
+    run_id="order-A-1",
+    checkpoints=store,
+    approval=decision,
+)
+# result.status == "completed" (if no later step halts)
+```
+
+```python
+# ---- approve with an amendment ----
+amended = ApprovalDecision(
+    request_id=request.request_id,
+    verdict="amended",
+    reviewer_id="alice@example.com",
+    amended_output={"score": 72, "confidence": 0.91},  # must satisfy the output schema
+)
+
+result = await pipeline.run(
+    initial,
+    run_id="order-A-1",
+    checkpoints=store,
+    approval=amended,
+)
+```
+
+```python
+# ---- reject ----
+rejection = ApprovalDecision(
+    request_id=request.request_id,
+    verdict="rejected",
+    reviewer_id="alice@example.com",
+    rationale="Risk score too high for automated approval.",
+)
+
+result = await pipeline.run(
+    initial,
+    run_id="order-A-1",
+    checkpoints=store,
+    approval=rejection,
+)
+# result.status == "halted"
+# result.halt_code == "approval_rejected"
+```
+
+On an approved or amended step, the output is checkpointed and the run continues
+from the next step. On rejection the run halts with `halt_code == "approval_rejected"`;
+that request is terminal.
+
+## Invariants
+
+**Schema gate on amendments.** An amended output is validated against the step's
+declared output schema exactly as a model output is. If the amendment does not
+satisfy the schema the run halts with `halt_code == "schema_violation"` — the
+human decision is subject to the same structural check as any other output.
+
+**Approval is not declassification.** An approved or amended output keeps the
+trust label of the original execution. If the step produced a tainted output,
+that taint is preserved on the checkpointed result; downstream taint and
+condition gates see the original trust level. The `proposed_output_trust` field on
+the `ApprovalRequest` shows the trust label the output will carry — approving cannot change the trust label: the checkpointed result carries the
+join of the original label and the current scope, so UNTRUSTED stays UNTRUSTED.
+
+**Decisions are single-use and request-bound.** An `ApprovalDecision` is
+consumed exactly once, matched by `request_id`. Replaying a consumed decision,
+or supplying one whose `request_id` does not match the pending request, halts
+with `halt_code == "approval_error"`.
+
+**Rejection is terminal for that request.** A rejection ends the pending request.
+Re-running the pipeline under the same `run_id` mints a fresh `ApprovalRequest`
+so a new decision can be delivered.
+
+**Gated agents should still be idempotent.** The gated agent re-runs only at
+first execution (never on a decision-only poll). Write gated agent handlers as
+idempotent as a defensive practice — a process restart before the checkpoint is
+persisted can cause re-execution.
+
+## Trust boundary
+
+An `approved` audit record asserts that the applied output matches the output
+stored in the approval request at halt time. The integrity of that request is the
+integrity of the checkpoint store. `InMemoryCheckpointStore` is suitable for
+development and single-process flows; for regulated deployments that need durable
+or cryptographically signed checkpoints, use a durable store (see
+[Durable resume](/guide/durable-resume)).
+
+## Common mistakes
+
+- **Reusing a consumed decision.** Replaying the same `ApprovalDecision` after it
+  was already applied halts with `approval_error`. Mint a new decision for the new
+  request.
+- **Supplying `approval=` without `checkpoints=` and `run_id=`.** The run raises
+  `ValueError` immediately — a decision can only apply to a stored request from a
+  resumable run.
+- **Amending with a payload that does not satisfy the output schema.** The pipeline
+  validates the amendment exactly as it validates model output. A non-conforming
+  amendment halts with `schema_violation`, not `approval_error`.
+- **Treating a rejection as retryable through the same request.** It is not — the
+  rejected request is cleared. Re-run the pipeline under the same `run_id` to
+  mint a fresh `ApprovalRequest`.
+
+## Related
+
+- [Escalation](/guide/escalation) — how Drawbore builds the escalation package
+  and routes it, and the other triggers that stop a run for human input.
+- [Durable resume](/guide/durable-resume) — checkpoint stores, cross-process
+  resume, and the refuse-on-drift seal that keeps resumed runs consistent.
+- [Local testing](/guide/local-testing) — how to mock tools and model responses
+  while the real Drawbore safety layer runs end-to-end.
+- [Reliability](/guide/reliability) — the full closed vocabulary of
+  `halt_code` values, including `approval_rejected` and `approval_error`.
