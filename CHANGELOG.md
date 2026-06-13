@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Durable human-approval storage. `FileCheckpointStore` now persists a pending
+  `ApprovalRequest` to disk, so a typed-approval cycle (or a resumable
+  low-confidence halt) survives a process restart and resumes without
+  re-executing the gated agent. The checkpoint store traffics the request in its
+  JSON form; the pipeline owns reconstruction. The in-memory store is unchanged.
+
 - Resumable low-confidence approval cycle. A `HasConfidence` step that falls
   below the pipeline's `confidence_threshold` in sync mode now mints a resumable
   `ApprovalRequest` and halts with the new `confidence_approval_pending` halt

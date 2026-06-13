@@ -113,6 +113,12 @@ On an approved or amended step, the output is checkpointed and the run continues
 from the next step. On rejection the run halts with `halt_code == "approval_rejected"`;
 that request is terminal.
 
+The example above uses `InMemoryCheckpointStore`, so a pending request lives only
+in process. To let an approval cycle survive a process restart, use a durable
+checkpoint store: `FileCheckpointStore(path)` persists the pending request to disk
+and a fresh process resumes it (with the decision) without re-executing the gated
+agent.
+
 ## Invariants
 
 **Schema gate on amendments.** An amended output is validated against the step's
