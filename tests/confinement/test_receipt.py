@@ -18,6 +18,7 @@ from drawbore.confinement.receipt import (
     _evaluate,
     _fingerprint,
 )
+from drawbore.config.fingerprint import footprint_fingerprint as _fp_fn
 
 
 def _call(
@@ -54,14 +55,14 @@ def _receipt(
     run_id="r",
 ) -> ConfinementReceipt:
     """Build a well-formed receipt: derive the verdict from the calls+facts the
-    SAME way the minter does, then fingerprint over the exact positional payload."""
+    SAME way the minter does, then fingerprint over the exact positional payload.
+    footprint_fp is derived from the declared facts so that verify's consistency
+    check (footprint_fingerprint must match declared_facts) always holds here."""
     calls = tuple(calls)
     facts = tuple(facts)
     step_agents = tuple(step_agents)
     verdict = _evaluate(calls, facts)
-    # footprint_fingerprint is embedded as data; verify hashes it inside the
-    # receipt payload but does not re-derive it from facts. Any stable string works.
-    footprint_fp = "sha256:footprint"
+    footprint_fp = _fp_fn(facts)
     receipt_fp = _fingerprint(
         run_id, run_status, footprint_fp, facts, step_agents, calls, verdict
     )
@@ -233,3 +234,123 @@ def test_legible_is_readable_string():
     assert "CONFINED" in text
     assert r.run_id in text
     assert "t" in text
+
+
+# ---------------------------------------------------------------------------
+# FIX 1a — footprint_fingerprint must match declared_facts (unconditional check)
+# ---------------------------------------------------------------------------
+
+
+def test_inconsistent_footprint_fingerprint_is_unverifiable():
+    """A receipt whose footprint_fingerprint does not match its declared_facts is
+    caught unconditionally by verify — no proxy log or expected fp required.
+    This closes the gap where a forger changes declared_facts but leaves the original
+    footprint_fingerprint, making an out-of-footprint call look declared."""
+    from drawbore.config.fingerprint import footprint_fingerprint as fp_fn
+
+    facts = (("A", "tool", "real_tool", "*"),)
+    # Fingerprint of DIFFERENT facts — inconsistent with the declared_facts above.
+    wrong_fp = fp_fn((("A", "tool", "other_tool", "*"),))
+
+    calls = (_call(ref="real_tool"),)
+    step_agents = ("A",)
+    verdict = _evaluate(calls, facts)
+    # Build a self-consistent receipt (integrity check passes) but with wrong_fp.
+    receipt_fp = _fingerprint("r", "completed", wrong_fp, facts, step_agents, calls, verdict)
+    receipt = ConfinementReceipt(
+        run_id="r",
+        status="completed",
+        footprint_fingerprint=wrong_fp,
+        declared_facts=facts,
+        step_agents=step_agents,
+        observed_calls=calls,
+        verdict=verdict,
+        receipt_fingerprint=receipt_fp,
+    )
+
+    v = verify(receipt)
+    assert v.status == "unverifiable"
+    assert any("footprint fingerprint" in u for u in v.unverifiable)
+
+
+# ---------------------------------------------------------------------------
+# FIX 1b — expected_footprint_fingerprint binds declared footprint to manifest
+# ---------------------------------------------------------------------------
+
+
+def test_inflated_declared_facts_caught_by_expected_footprint():
+    """A fully self-consistent forged receipt with inflated declared_facts passes
+    verify alone (the documented limitation of keyless SHA-256), but is caught by
+    verify(..., expected_footprint_fingerprint=<true manifest fp>).
+    This is the adversary who recomputes ALL fingerprints over a self-consistent
+    forged receipt — the only defence is binding to the manifest the auditor holds."""
+    from drawbore.config.fingerprint import footprint_fingerprint as fp_fn
+
+    original_facts = (("A", "tool", "real_tool", "*"),)
+    original_fp = fp_fn(original_facts)
+
+    # Forger inflates declared_facts to cover a tool that was out of footprint.
+    forged_facts = (("A", "tool", "extra_tool", "*"), ("A", "tool", "real_tool", "*"))
+    forged_fp = fp_fn(forged_facts)  # consistent with forged_facts
+
+    calls = (_call(ref="extra_tool"),)
+    step_agents = ("A",)
+    verdict = _evaluate(calls, forged_facts)
+    assert verdict.status == "confined"  # the forgery makes the call look declared
+
+    # Forger recomputes receipt_fingerprint over all forged data (keyless — possible).
+    receipt_fp = _fingerprint(
+        "r", "completed", forged_fp, forged_facts, step_agents, calls, verdict
+    )
+    forged_receipt = ConfinementReceipt(
+        run_id="r",
+        status="completed",
+        footprint_fingerprint=forged_fp,
+        declared_facts=forged_facts,
+        step_agents=step_agents,
+        observed_calls=calls,
+        verdict=verdict,
+        receipt_fingerprint=receipt_fp,
+    )
+
+    # verify alone: forged_fp IS consistent with forged_facts, so FIX 1a passes too.
+    # This is the documented limitation of keyless fingerprinting.
+    v_alone = verify(forged_receipt)
+    assert v_alone.status == "confined", (
+        "verify alone cannot detect a fully self-consistent keyless forgery"
+    )
+
+    # Binding to the true manifest footprint catches the inflation.
+    v_bound = verify(forged_receipt, expected_footprint_fingerprint=original_fp)
+    assert v_bound.status == "unverifiable"
+    assert any("expected" in u.lower() for u in v_bound.unverifiable)
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 — log-binding must reject a log from a different run_id
+# ---------------------------------------------------------------------------
+
+
+def test_log_binding_rejects_different_run_id():
+    """When a proxy log is supplied, each entry's run_id must match the receipt's
+    run_id. A log from a different run with otherwise byte-identical calls must
+    not pass as binding evidence for this run."""
+    facts = (("A", "tool", "t", "*"),)
+    r = _receipt([_call(ref="t")], facts)
+    wrong_run_log = [
+        {
+            "tool": "t",
+            "run_id": "completely-different-run",
+            "operation": "invoke",
+            "input_hash": "h",
+            "output_hash": "h2",
+            "result": "ok",
+            "step": 0,
+            "scope": "trusted",
+            "kind": "custom",
+            "exfil_capable": False,
+        }
+    ]
+    v = verify(r, wrong_run_log)
+    assert v.status == "unverifiable"
+    assert any("run" in u.lower() for u in v.unverifiable)

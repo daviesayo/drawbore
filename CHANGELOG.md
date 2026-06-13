@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `verify` now checks that `receipt.footprint_fingerprint` is consistent with
+  `receipt.declared_facts` before accepting any receipt (returning `unverifiable`
+  on mismatch). This closes a gap where a forger who changed `declared_facts` but
+  left the original `footprint_fingerprint` — or vice versa — would still pass.
+- `verify` accepts a new keyword argument `expected_footprint_fingerprint: str | None`.
+  When provided, it asserts that `receipt.footprint_fingerprint` matches the value
+  the auditor holds independently (e.g. from `effective_authority(config).fingerprint()`).
+  This closes the self-consistent keyless-forgery gap: an adversary who inflates
+  `declared_facts` and recomputes all SHA-256 fingerprints consistently is caught
+  when bound to the manifest fingerprint.
+- `verify(receipt, proxy_log)` now also checks each log entry's `run_id` against
+  `receipt.run_id`, returning `unverifiable` if they differ. A different run's log
+  with byte-identical tool calls no longer passes as binding evidence for this run.
+
 ### Added
 
 - Confinement receipt: `RunResult.confinement_receipt` carries a `ConfinementReceipt`
