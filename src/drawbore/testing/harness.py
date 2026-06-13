@@ -91,6 +91,9 @@ class TestPipeline:
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
         effect_ledger: "EffectLedger | None" = None,
+        max_calls_per_tool: int = 3,
+        max_tool_calls_per_run: int = 500,
+        max_distinct_tools_per_run: int = 50,
     ):
         mode = self._mode
         rid = run_id or mode._next_run_id()
@@ -118,6 +121,9 @@ class TestPipeline:
             initial_trust=initial_trust,
             approval=approval,
             effect_ledger=effect_ledger,
+            max_calls_per_tool=max_calls_per_tool,
+            max_tool_calls_per_run=max_tool_calls_per_run,
+            max_distinct_tools_per_run=max_distinct_tools_per_run,
         )
 
 
