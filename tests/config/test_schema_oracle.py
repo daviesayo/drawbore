@@ -236,6 +236,67 @@ def test_new_optional_field_under_forbid_flags():
     )
 
 
+def test_new_field_under_schema_additionalprops_flags():
+    # additionalProperties is a constraining schema dict, not False/absent/True/{}.
+    # Adding an explicit field with a schema that is NOT a subset of that constraint
+    # admits inputs the old schema rejected — a genuine relaxation.
+    #
+    # Case 1: old additionalProperties constrains to {"type":"string","maxLength":3}.
+    # new adds "b":{"type":"string"} which accepts e.g. "longstring" — old rejected it.
+    assert _relaxed(
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {"type": "string", "maxLength": 3},
+        },
+        {
+            "type": "object",
+            "properties": {"b": {"type": "string"}},
+            "additionalProperties": {"type": "string", "maxLength": 3},
+        },
+    )
+    # Case 2: old additionalProperties requires integer; new adds "b":{"type":"string"}
+    # which accepts "x" — old required integer for any extra key.
+    assert _relaxed(
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {"type": "integer"},
+        },
+        {
+            "type": "object",
+            "properties": {"b": {"type": "string"}},
+            "additionalProperties": {"type": "integer"},
+        },
+    )
+
+
+def test_new_field_under_additionalprops_true_passes():
+    # additionalProperties: True — old already accepted any value for "b", so adding
+    # an explicit field does not widen the accepted-input set.
+    assert not _relaxed(
+        {"type": "object", "additionalProperties": True, "properties": {"a": {"type": "string"}}},
+        {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        },
+    )
+
+
+def test_new_field_under_empty_schema_additionalprops_passes():
+    # additionalProperties: {} is an allow-all schema (no constraints), so adding an
+    # explicit field does not widen the accepted-input set.
+    assert not _relaxed(
+        {"type": "object", "additionalProperties": {}, "properties": {"a": {"type": "string"}}},
+        {
+            "type": "object",
+            "additionalProperties": {},
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        },
+    )
+
+
 def test_nested_defs_relaxation_flags():
     old = {
         "type": "object",

@@ -309,15 +309,18 @@ def _compare_properties(
         if name in ov and name in nv:
             _compare(ov[name], nv[name], here, agent, out)
         elif name in nv:  # new property key
-            # Field-presence rule: a new field is a relaxation ONLY when the old
-            # parent forbade additional properties (so old would have rejected an
-            # input carrying it). Where additionalProperties was absent/true/schema,
-            # such inputs were already accepted, so a new field does not widen.
-            if old_additional is False:
+            # Field-presence rule: a new field is a relaxation UNLESS the old parent's
+            # additionalProperties was provably open — True, absent (None), or an empty
+            # allow-all schema ({}). A False value or a non-empty constraining schema
+            # dict must flag (fail-closed): adding an explicit field with a looser schema
+            # than the constraint admits inputs the old schema rejected.
+            old_ap_open = old_additional is True or old_additional is None or old_additional == {}
+            if not old_ap_open:
                 out.append(
                     SchemaRelaxation(
                         agent, here, "properties", None, nv[name],
-                        "new field accepted where the old schema forbade additional properties",
+                        "new field accepted where the old schema did not provably accept it"
+                        " (additionalProperties was not open)",
                     )
                 )
         else:  # removed property key
