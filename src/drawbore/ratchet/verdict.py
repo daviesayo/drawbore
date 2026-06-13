@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from drawbore.config.authority import AuthorityDiff
+    from drawbore.config.schema_oracle import SchemaRelaxationDiff
     from drawbore.pipeline import Pipeline
 
-RejectionLayer = Literal["resolver", "authority", "corpus", "corpus_integrity"]
+RejectionLayer = Literal["resolver", "authority", "schema_relaxation", "corpus", "corpus_integrity"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class RatchetVerdict:
     corpus_root_before: str
     corpus_root_after: str | None
     reason: str | None = None
+    schema_diff: "SchemaRelaxationDiff | None" = None
 
     def legible(self) -> str:
         """A regulator-readable, single-block account of the decision."""
@@ -58,6 +60,8 @@ class RatchetVerdict:
             )
         if self.authority_diff is not None:
             lines.append(self.authority_diff.certificate())
+        if self.schema_diff is not None:
+            lines.append(self.schema_diff.certificate())
         if self.reason is not None:
             lines.append(self.reason)
         lines.append(f"Corpus root unchanged {self.corpus_root_before}.")
