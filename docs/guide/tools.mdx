@@ -55,6 +55,58 @@ async def retrieve(query: TxQuery, tools: ToolContext) -> Tx:
 - **No runaway loops.** If an agent calls the same tool too many times in one
   run, the circuit breaker stops it — the loop dies here, not on your bill.
 
+## Circuit-breaker caps
+
+The proxy enforces two layers of circuit-breaker protection. Both layers use the
+same halt vocabulary (`halt_code == "circuit_breaker"`, proxy-log result
+`"denied:breaker"`) — distinguish them by reading the legible `result.reason`
+string.
+
+### Per-step-per-tool cap
+
+The default `max_calls_per_tool=3` limit counts calls **per tool, per agent
+step**. When an agent calls the same tool more than three times in one step, the
+proxy halts immediately:
+
+```
+"tool 'payments_db.read_record' called more than 3 times by step charge in run 'order-A-1'"
+```
+
+### Run-level caps
+
+Two additional caps bound the run's **aggregate** tool activity across every step
+and every agent:
+
+| kwarg | default | what it bounds |
+|---|---|---|
+| `max_tool_calls_per_run` | `500` | total admitted tool calls for the entire run |
+| `max_distinct_tools_per_run` | `50` | number of distinct tool names admitted in one run |
+
+Pass any of the three knobs to `pipeline.run(...)` to tune them tighter:
+
+```python
+result = await pipeline.run(
+    order,
+    max_calls_per_tool=5,
+    max_tool_calls_per_run=100,
+    max_distinct_tools_per_run=10,
+)
+```
+
+All three are always-on and can only be set to a value of 1 or greater — they
+cannot be disabled. A breach halts the run immediately:
+
+```
+"run 'order-A-1' exceeded the max-tool-calls-per-run cap (cap 100)"
+"run 'order-A-1' exceeded the max-distinct-tools-per-run cap (cap 10); blocked new tool 'reports_db.read_summary'"
+```
+
+To tell a per-step breach from a run-level breach, read `result.reason`. The
+per-step message names the step and the tool; the run-level message names the
+run and the cap that tripped. Branch on `halt_code` for stable routing and use
+the prose only for operator logging. See [Reliability](/guide/reliability) for
+the full halt-code vocabulary.
+
 ## Register a pipeline against a registry
 
 ```python

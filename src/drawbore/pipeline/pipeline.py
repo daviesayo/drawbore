@@ -419,6 +419,9 @@ class Pipeline:
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
         effect_ledger: "EffectLedger | None" = None,
+        max_calls_per_tool: int = 3,
+        max_tool_calls_per_run: int = 500,
+        max_distinct_tools_per_run: int = 50,
     ) -> RunResult:
         """Execute the pipeline and produce an audit record.
 
@@ -460,6 +463,9 @@ class Pipeline:
                 initial_trust=initial_trust,
                 approval=approval,
                 effect_ledger=effect_ledger,
+                max_calls_per_tool=max_calls_per_tool,
+                max_tool_calls_per_run=max_tool_calls_per_run,
+                max_distinct_tools_per_run=max_distinct_tools_per_run,
             )
             return result
         finally:
@@ -529,6 +535,9 @@ class Pipeline:
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
         effect_ledger: "EffectLedger | None" = None,
+        max_calls_per_tool: int = 3,
+        max_tool_calls_per_run: int = 500,
+        max_distinct_tools_per_run: int = 50,
     ) -> RunResult:
         """Execute the pipeline (halt-and-escalate default).
 
@@ -568,7 +577,14 @@ class Pipeline:
         preflight_joins: set[int] = set()
         issuer = TokenIssuer()
         ledger = TaintLedger(initial_trust=initial_trust, managed=True)
-        proxy = ToolProxy(registry, issuer, ledger=ledger, effect_ledger=effect_ledger)
+        proxy = ToolProxy(
+            registry, issuer,
+            max_calls_per_tool=max_calls_per_tool,
+            ledger=ledger,
+            effect_ledger=effect_ledger,
+            max_tool_calls_per_run=max_tool_calls_per_run,
+            max_distinct_tools_per_run=max_distinct_tools_per_run,
+        )
         # Expose the proxy's per-call log (tool, operation, duration, disposition) on
         # RunResult.metrics via the recorder, which reads it at build time.
         recorder.bind_tool_log(proxy.log)
