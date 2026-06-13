@@ -31,3 +31,9 @@ mocked models and tools — the safety layer runs for real. See
 Wrong: returning a half-finished result on failure. Right: let the run halt and
 escalate — Drawbore has no partial-results mode; a halted run's `halt_code` and
 escalation package tell a human exactly what stopped and why.
+
+### Wrapping framework-registered handlers to time or log them
+Wrong: wrapping an MCP or builtin tool handler after registration to capture
+timing or a log entry. Right: the proxy already records every call — read
+`result.metrics.tool_calls` for per-call tool, operation, duration, and
+disposition. See [Tools — Instrumenting and observing tool calls](/guide/tools).
