@@ -62,3 +62,125 @@ is absent from the manifest's static footprint. Run it in your acceptance tests 
 the day a future change binds a ref the manifest cannot see.
 
 See the full runnable CI-gate example at `examples/authority_regression_ci.py`.
+
+---
+
+## Input-schema relaxation
+
+A second monotonicity check on the _data_ axis: where authority monotonicity asks
+"did this agent gain a new _capability_?", the schema-relaxation oracle asks
+"did this agent's _input gate_ get weaker?" A relaxation is any schema change that
+makes an agent accept a strictly wider set of inputs — a raised `maxLength`, a
+dropped `required` field, a widened `enum`, a loosened numeric bound, a removed
+`pattern` or `type` constraint. A weaker input gate is a safety regression even
+when no capability changes: the validation that used to reject malformed data no
+longer does.
+
+`check_no_schema_relaxation(old, new)` checks every agent present in _both_
+manifests, matched by name:
+
+```python
+from drawbore.config import PipelineConfig, check_no_schema_relaxation
+from drawbore.config.errors import SchemaRelaxationError
+
+old = PipelineConfig.model_validate(base_manifest)
+new = PipelineConfig.model_validate(head_manifest)
+try:
+    check_no_schema_relaxation(old, new)     # raises if any agent's input schema relaxed
+except SchemaRelaxationError as exc:
+    print(exc.diff.legible())                # regulator-readable certificate
+    raise
+```
+
+Catching a `maxLength` relaxation (the most common kind):
+
+```python
+# base_manifest agent 'payment_validator' field 'ref':
+#   {"type": "string", "maxLength": 12}
+# head_manifest agent 'payment_validator' field 'ref':
+#   {"type": "string", "maxLength": 50}
+
+check_no_schema_relaxation(old_config, new_config)
+# raises SchemaRelaxationError — legible() output:
+#   Input-schema relaxation check: FAILED — 1 relaxation(s) detected.
+#   - agent 'payment_validator' at /properties/ref/maxLength: 'maxLength' relaxed
+#     (old=12 -> new=50); upper bound raised; larger values now accepted
+```
+
+For the raw diff without raising:
+
+```python
+from drawbore.config import schema_relaxation_diff
+
+diff = schema_relaxation_diff(old, new)
+if not diff.ok:
+    print(diff.legible())   # same certificate the error carries
+```
+
+`SchemaRelaxationDiff.legible()` includes the SHA-256 fingerprints of both
+manifests' input-schema maps — suitable as a provenance anchor in a PR comment or
+audit record.
+
+**Fail-closed honesty clause.** The oracle's contract is _sound, not complete_: it
+never passes a genuine relaxation, and it fails closed (flags) on any change it
+cannot prove is a narrowing. Regex (`pattern`), structural keywords (`anyOf`,
+`oneOf`, `allOf`, `type`, `$ref`), and any non-metadata keyword removal always
+flag — even when the specific change is semantically safe. The only keyword
+removals that are silently allowed are the pure-annotation set: `title`,
+`description`, `default`, and `examples`. If the oracle flags a change you believe
+is correct, the right response is human review; bypassing the check is not.
+
+**Toolchain-version caveat.** The input schema is captured from `model_json_schema()`
+at `to_config()` export time. Comparing manifests produced under different Pydantic
+minor versions can surface version-artifact "relaxations" that are not real
+behavioral changes — the oracle flags them fail-closed (never a false-pass). Pin
+your Pydantic version across baseline and candidate builds to eliminate
+version-artifact noise.
+
+**Known limitation: matching is by agent name.** An agent present in one manifest
+but absent from the other is skipped — added and removed agents are the authority
+diff's concern. A relaxation on an agent that was _renamed_ between versions is not
+caught here. However, if the renamed agent carried tool declarations, the authority
+monotonicity check will flag the new name as gaining new authority and hold the
+candidate for human review before the schema check would run.
+
+If you use the self-improvement admission gate (`drawbore.ratchet.admit()`), this
+check runs automatically as a second monotonicity layer alongside the capability-
+authority check. A candidate that relaxes any agent's input schema yields
+`verdict.admitted = False`, `verdict.schema_diff` carries the diff, and
+`verdict.legible()` renders it for a reviewer. See
+[Safety ratchet](/docs/guide/safety-ratchet).
+
+### API reference
+
+**`check_no_schema_relaxation(old: PipelineConfig, new: PipelineConfig) -> None`**
+
+Raises `SchemaRelaxationError` if any name-matched agent's input schema was
+relaxed; returns `None` on identity or a pure tightening. Admission and CI use
+only — never raised by the pipeline runtime.
+
+**`schema_relaxation_diff(old: PipelineConfig, new: PipelineConfig) -> SchemaRelaxationDiff`**
+
+Returns the raw diff without raising. `diff.ok` is `True` when no relaxation was
+found; `diff.relaxations` is a tuple of `SchemaRelaxation` items when not.
+
+**`SchemaRelaxation`**
+
+One flagged relaxation at a concrete JSON-schema path. Fields: `agent` (matched
+agent name), `path` (e.g. `/properties/ref/maxLength`), `keyword` (the
+JSON-schema keyword involved), `old`/`new` (old and new values; `None` when
+absent), `reason` (auditor-readable one-liner).
+
+**`SchemaRelaxationDiff`**
+
+The full comparison result. `ok` is `True` iff `relaxations` is empty.
+`old_fingerprint`/`new_fingerprint` are SHA-256 fingerprints of the input-schema
+maps of both manifests. `legible()` returns a human-readable certificate (also
+aliased as `certificate()` for uniform integration with the ratchet verdict).
+
+**`SchemaRelaxationError`**
+
+Raised by `check_no_schema_relaxation`. `.diff` holds the `SchemaRelaxationDiff`
+for structured inspection. A plain `Exception` (not a `DrawboreError`): this check
+runs at admission/CI time only and is not part of the pipeline runtime halt-code
+vocabulary.

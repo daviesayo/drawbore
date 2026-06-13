@@ -75,6 +75,26 @@ verdict: `verdict.admitted` is `False`, `verdict.authority_diff` carries the dif
 `verdict.legible()` renders it for a reviewer. A widening is never auto-admitted; it is
 a signal for a human decision, not an error in the candidate.
 
+### Input-schema relaxation
+
+A second monotonicity check on the _data_ axis, running immediately after the
+capability-authority check. `admit()` compares every agent's input schema between
+baseline and candidate (matched by name) and holds the candidate for human review if
+any schema was _relaxed_ — that is, if it now accepts a strictly wider set of inputs
+than before. A raised `maxLength`, a dropped `required` field, a widened `enum`, or
+any loosened constraint is a safety regression on the data axis even when no
+capability changed.
+
+A relaxing candidate yields `verdict.admitted = False`, `verdict.schema_diff` carries
+the `SchemaRelaxationDiff`, and `verdict.legible()` renders the certificate. Like the
+authority widening, this is a signal for a human decision: inspect `schema_diff.legible()`
+to understand what changed, decide whether the relaxation is intentional, and if so
+re-baseline with the updated manifest as the new reference.
+
+See [Authority regression checks — Input-schema relaxation](/docs/guide/authority-regression#input-schema-relaxation)
+for the full reference, including the fail-closed honesty clause and toolchain-version
+caveat.
+
 ### Corpus replay
 
 For an admitted manifest, `admit()` replays every frozen regression case through the
@@ -133,10 +153,16 @@ model+tools agent) is not serializable and must not be included; pass only the J
 dict that `test_mode` would accept for deterministic and one-shot steps.
 
 **Treating an authority widening as an error.** A widening verdict means a human needs to
-decide, not that the candidate is broken. Read `verdict.authority_diff` for the exact diff (its `certificate()` renders it for review),
-decide whether the new authority is intentional, and if so re-baseline with the widened
-manifest as the new reference. Do not patch around it by removing tools from the
-candidate to pass the gate.
+decide, not that the candidate is broken. Read `verdict.authority_diff` for the exact diff
+(its `certificate()` renders it for review), decide whether the new authority is
+intentional, and if so re-baseline with the widened manifest as the new reference. Do not
+patch around it by removing tools from the candidate to pass the gate.
+
+**Treating a schema-relaxation verdict as an error.** The same applies to a
+`schema_relaxation` rejection: `verdict.schema_diff.legible()` shows exactly which agent,
+which keyword, and the old/new values. If the relaxation is intentional (a deliberate
+widening of accepted inputs), re-baseline with the updated manifest as the new reference.
+Do not narrow the schema back artificially just to clear the gate.
 
 **Expecting `corpus_root_after` to advance on every admit.** Because the replay runs
 with pinned baseline mocks, the derived cases usually duplicate the existing corpus head.

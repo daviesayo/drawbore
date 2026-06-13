@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Input-schema relaxation detection for safe pipeline evolution
+  (`check_no_schema_relaxation` / `schema_relaxation_diff`, exported from
+  `drawbore.config`). Compares two serialized pipeline manifests and flags any
+  agent whose input schema was relaxed — a raised `maxLength`, a dropped
+  `required` field, a widened `enum`, a loosened numeric bound, or any removed
+  constraint keyword. Fail-closed: any change that cannot be proven a narrowing
+  is treated as a relaxation. The self-improvement admission gate now runs this
+  check as a second monotonicity layer and holds a relaxing candidate for human
+  review (`verdict.schema_diff`).
+
 - Exactly-once effect ledger for durable resume. Effectful tool calls are now
   recorded in a two-phase pending→succeeded log behind the tool proxy; on
   crash+resume an already-recorded effect is replayed from the ledger instead of
