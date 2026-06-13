@@ -108,4 +108,7 @@ HALT_CODES: tuple[str, ...] = (
     "approval_rejected",
     "approval_error",
     "resume_drift",
+    "effect_divergence",
+    "effect_unresolved",
+    "effect_ledger_error",
 )

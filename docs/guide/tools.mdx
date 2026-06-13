@@ -124,3 +124,12 @@ chokepoint, and the audit `input_hash` is computed before the handler runs, so
 an interceptor that altered inputs or outputs would break audit-record integrity
 and bypass enforcement. If you need per-call transformation for a tool you
 author, wrap the handler before registration as shown above.
+
+## Exactly-once resume for effectful tools
+
+Tools default to `effectful=True`. On a crash+resume, effectful calls recorded
+in the effect ledger are replayed from the ledger instead of being re-fired.
+Mark pure read-only tools `effectful=False` so resume re-queries them live
+rather than replaying a stale result. See [Durable resume](/guide/durable-resume#exactly-once-effects) for
+the full semantics, the `current_idempotency_key()` accessor, and the
+`EffectLedger` interface.

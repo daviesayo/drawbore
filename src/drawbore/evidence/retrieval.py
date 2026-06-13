@@ -68,6 +68,7 @@ def register_evidence_tool(registry, *, store: EvidenceStore, ref: str = EVIDENC
     handler.__name__ = "evidence::retrieve"
     registry.register_builtin(
         ref, handler,
+        effectful=False,
         schema={
             "type": "object",
             "properties": {

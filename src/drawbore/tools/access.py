@@ -45,6 +45,33 @@ def get_run_context() -> RunContext:
     return ctx
 
 
+# ---------------------------------------------------------------------------
+# Idempotency-key propagation — set by the proxy around each effectful call;
+# readable by tool handlers via current_idempotency_key().
+# ---------------------------------------------------------------------------
+
+_idempotency_key: ContextVar["str | None"] = ContextVar(
+    "drawbore_idempotency_key", default=None
+)
+
+
+def current_idempotency_key() -> "str | None":
+    """Return the idempotency key for the currently-executing effectful tool
+    call, or ``None`` when called outside an effectful call."""
+    return _idempotency_key.get()
+
+
+def _set_idempotency_key(value: str) -> Token:
+    """Internal — set the idempotency key before a handler executes.
+    Returns a Token that must be passed to ``_reset_idempotency_key`` after."""
+    return _idempotency_key.set(value)
+
+
+def _reset_idempotency_key(token: Token) -> None:
+    """Internal — restore the previous idempotency-key state after a handler."""
+    _idempotency_key.reset(token)
+
+
 ToolShim = Callable[[Any, str], Awaitable[Any]]
 
 

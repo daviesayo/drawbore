@@ -26,7 +26,13 @@ from drawbore.observability import payload_hash
 from drawbore.errors import SanitizationError
 from drawbore.schema import check_compatibility, validate
 from drawbore.schema.errors import SchemaCompatibilityError, SchemaValidationError
-from drawbore.state import CheckpointStore, ResumeLedger, ResumeLedgerBuilder, RunState
+from drawbore.state import (
+    CheckpointStore,
+    EffectLedger,
+    ResumeLedger,
+    ResumeLedgerBuilder,
+    RunState,
+)
 from drawbore.state.step_seal import diff_seals, field_label, seal_for
 from drawbore.orchestration import LocalEngine, OrchestratorEngine
 from drawbore.tools import (
@@ -398,6 +404,7 @@ class Pipeline:
         registry_override: Any | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
+        effect_ledger: "EffectLedger | None" = None,
     ) -> RunResult:
         """Execute the pipeline and produce an audit record.
 
@@ -438,6 +445,7 @@ class Pipeline:
                 registry_override=registry_override,
                 initial_trust=initial_trust,
                 approval=approval,
+                effect_ledger=effect_ledger,
             )
             return result
         finally:
@@ -473,6 +481,7 @@ class Pipeline:
         registry_override: Any | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
+        effect_ledger: "EffectLedger | None" = None,
     ) -> RunResult:
         """Execute the pipeline (halt-and-escalate default).
 
@@ -512,7 +521,7 @@ class Pipeline:
         preflight_joins: set[int] = set()
         issuer = TokenIssuer()
         ledger = TaintLedger(initial_trust=initial_trust, managed=True)
-        proxy = ToolProxy(registry, issuer, ledger=ledger)
+        proxy = ToolProxy(registry, issuer, ledger=ledger, effect_ledger=effect_ledger)
         # Expose the proxy's per-call log (tool, operation, duration, disposition) on
         # RunResult.metrics via the recorder, which reads it at build time.
         recorder.bind_tool_log(proxy.log)
@@ -584,7 +593,7 @@ class Pipeline:
                         continue
                     if not checkpoints.is_completed(run_id, i):
                         continue
-                    current = seal_for(node_.agent.spec, node_.evidence)
+                    current = seal_for(node_.agent.spec, node_.evidence, registry)
                     stored = checkpoints.seal_of(run_id, i)
                     if stored is None:
                         ledger_builder.refused(i, node_.agent.name, drifted_fields=())
@@ -871,7 +880,7 @@ class Pipeline:
                     output_trust[name] = join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx))
                     checkpoints.step_succeeded(run_id, idx, validated_out)
                     checkpoints.record_trust(run_id, idx, output_trust[name])
-                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
                     ledger_builder.executed(idx, name, sealed=True)
                     steps_run += 1
                     continue
@@ -910,6 +919,33 @@ class Pipeline:
                     received=outcome.received, attempted_output=outcome.attempted,
                     code=outcome.code,
                 )
+
+            # Step-end orphan check: a clean step that consumed FEWER effectful
+            # tool calls than were recorded for it (the resumed run skipped an
+            # already-fired effect) cannot be proven exactly-once — halt fail-
+            # closed. Only runs on a clean (non-halted) step with a ledger wired;
+            # a halted step legitimately leaves recorded entries to re-replay on
+            # the next resume, so it is excluded by the early return above.
+            if effect_ledger is not None:
+                consumed = proxy.effects_consumed(run_id, idx)
+                recorded = effect_ledger.recorded_count(run_id, idx)
+                if recorded > consumed:
+                    orphans = effect_ledger.entries_from(run_id, idx, consumed)
+                    detail = ", ".join(
+                        f"position {e.position} ({e.tool_ref})" for e in orphans
+                    )
+                    return self._halt(
+                        outputs, steps_run, escalations,
+                        step=name,
+                        reason=(
+                            f"effect_divergence: step '{name}' recorded {recorded} "
+                            f"effect(s) but the resumed run consumed {consumed}; "
+                            f"orphaned recorded effect(s) not re-fired: {detail}"
+                        ),
+                        received=None, attempted_output=None,
+                        code="effect_divergence",
+                    )
+
             validated_out = outcome.output
             audit = outcome.audit
 
@@ -997,7 +1033,7 @@ class Pipeline:
             if checkpoints is not None:
                 checkpoints.step_succeeded(run_id, idx, validated_out)
                 checkpoints.record_trust(run_id, idx, output_trust[name])
-                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
                 ledger_builder.executed(idx, name, sealed=True)
             else:
                 ledger_builder.executed(idx, name, sealed=False)

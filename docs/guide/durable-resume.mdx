@@ -116,6 +116,145 @@ Two more boundaries to know:
   also refuse with `resume_drift`: re-run those flows fresh under a new
   `run_id`.
 
+## Exactly-once effects
+
+Checkpointing resumes at the first incomplete step. But what about a step that
+had already fired some effectful tool calls — a charge, a notification, an
+external write — before the crash? Without extra bookkeeping, those calls would
+fire again.
+
+The **effect ledger** solves this. When a step resumes, each effectful tool call
+is replayed from the ledger instead of being re-fired: the recorded output is
+returned, and the real handler is never called a second time.
+
+### Mark tools as effectful or read-only
+
+Every tool defaults to `effectful=True` — the fail-closed choice. An
+unclassified tool is treated as effectful so it is never silently double-fired.
+Mark pure read-only tools `effectful=False` so resume re-queries them live
+instead of replaying a stale recorded result:
+
+```python
+registry.register_tool(
+    "payments.charge",
+    charge_handler,
+    effectful=True,    # default; explicit for clarity
+)
+registry.register_tool(
+    "records.read_customer",
+    read_customer,
+    effectful=False,   # safe to re-query; no ledger overhead
+)
+```
+
+`effectful` is supported on `register_tool`, `register_builtin`, and
+`register_mcp_tool`. The builtin `evidence://retrieve` is already registered
+`effectful=False`.
+
+### Wire the ledger alongside the checkpoint store
+
+Pass an `effect_ledger` together with `checkpoints` and a fixed `run_id`:
+
+```python
+from drawbore.state import FileCheckpointStore, InMemoryEffectLedger
+
+store = FileCheckpointStore("/var/lib/myapp/checkpoints")
+ledger = InMemoryEffectLedger()
+
+first = await pipeline.run(order, run_id="order-A-1", checkpoints=store, effect_ledger=ledger)
+# process crashes partway...
+again = await pipeline.run(order, run_id="order-A-1", checkpoints=store, effect_ledger=ledger)
+# effectful calls already recorded are replayed, never re-fired
+```
+
+The same `effect_ledger=` kwarg works with `pipeline.test_mode(...).run(...)`.
+
+### What happens on resume
+
+For each effectful call in the resuming step the proxy looks up the position in
+the ledger:
+
+- **No entry found** — first-time execution; the handler is called normally and
+  the result is recorded.
+- **Entry found, `SUCCEEDED`** — the recorded output is returned; the handler
+  is not called.
+- **Entry found, `PENDING`** — the handler fired but the ledger's confirmation
+  write was lost in the crash. The framework cannot prove the call succeeded
+  exactly once, so it halts `effect_unresolved` fail-closed. The recorded
+  idempotency key lets an operator verify the outcome against the remote system.
+  Resolving a pending entry (clearing or voiding it) is not yet part of the
+  public API; the run halts for human reconciliation.
+- **Divergence** — a call at a recorded position does not match what was
+  recorded (different tool or different arguments), or the resuming step fires
+  fewer effectful calls than were recorded (skipping a previously-fired effect).
+  The run halts `effect_divergence` rather than risk a double-fire or silent
+  replay gap.
+
+See [Reliability](/guide/reliability) for the full halt-code vocabulary.
+
+### Deterministic steps vs. model-driven loops
+
+The replay contract is strongest for **deterministic steps**: the same inputs
+always produce the same tool-call sequence, so a resumed deterministic step
+replays cleanly. Model-driven agentic loops are non-deterministic in call order:
+a resumed loop either reproduces the recorded sequence exactly or halts
+`effect_divergence` fail-closed. Design effectful agentic loops with that
+trade-off in mind.
+
+### Remote dedup with `current_idempotency_key()`
+
+There is a one-window residual risk: the handler succeeds, but the process
+crashes before the ledger records `SUCCEEDED`. On the next resume the ledger
+finds `PENDING` and halts. For calls to remote systems that support idempotency
+keys (Stripe, Adyen, most payment processors), you can push the dedup downstream
+and close the window:
+
+```python
+from drawbore.tools import current_idempotency_key
+
+async def charge_handler(args):
+    key = current_idempotency_key()  # stable hex key, unique per run/step/position/tool
+    return await stripe.charge(
+        amount=args["amount"],
+        idempotency_key=key,         # remote system deduplicates on its side
+    )
+```
+
+`current_idempotency_key()` returns the key while inside an effectful tool call
+and `None` outside one.
+
+### Ledger types
+
+All four types are exported from `drawbore.state`:
+
+| Type | Role |
+|------|------|
+| `EffectLedger` | ABC — implement this for a durable backend |
+| `InMemoryEffectLedger` | Default in-process implementation |
+| `EffectEntry` | A single recorded call (`run_id`, `step`, `position`, `tool_ref`, `input_hash`, `idempotency_key`, `status`, `output`) |
+| `EffectStatus` | `"pending"` or `"succeeded"` |
+
+### Durable ledger backends
+
+`InMemoryEffectLedger` does not survive process restart. For real
+crash-and-resume across machine failures, implement `EffectLedger` with a
+durable backend — a database row, a file, a cloud store. The interface mirrors
+`CheckpointStore`: a small, synchronous ABC with `record_pending`,
+`record_succeeded`, `entry_at`, `recorded_count`, and `entries_from`. All writes
+must be durable before the method returns; async I/O must be bridged internally.
+
+### Use `unclassified_effectful_tools()` as a CI check
+
+```python
+from drawbore.tools import unclassified_effectful_tools
+
+unclassified = unclassified_effectful_tools(registry)
+assert not unclassified, f"tools still at default effectful=True: {unclassified}"
+```
+
+This returns all tools currently marked effectful (the default), as candidates
+to review and mark `effectful=False` if they are pure reads.
+
 ## Common mistakes
 
 - **Reusing a `run_id` for a different request.** Resume is keyed by `run_id`;
@@ -126,3 +265,9 @@ Two more boundaries to know:
 - **Treating `resume_drift` as retryable.** It is not transient. Either
   restore the pipeline to the checkpointed semantics, or start a fresh
   `run_id` under the new ones.
+- **Passing a ledger without a checkpoint store.** The ledger and checkpoint
+  store are complementary: the store skips already-completed steps; the ledger
+  replays already-fired effects within a step. Neither alone prevents both
+  classes of double-execution.
+- **Using `InMemoryEffectLedger` across process restarts.** It does not
+  persist. Use a durable backend if your resume must survive a process exit.
