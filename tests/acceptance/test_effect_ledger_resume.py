@@ -1,23 +1,25 @@
 # tests/acceptance/test_effect_ledger_resume.py
 """Acceptance: exactly-once effectful-tool resume through test_mode.
 
-A small two-step pipeline with one effectful tool call exercises the durable
-effect ledger end to end through ``pipeline.test_mode``:
+A pipeline with one effectful agent exercises the durable effect ledger end to
+end through ``pipeline.test_mode``:
 
-1. ``test_exactly_once_effect_resume_through_test_mode`` — a step fires an
-   effectful tool, then the run halts (because the SECOND step fails); resume
-   on the same ``InMemoryCheckpointStore`` + ``InMemoryEffectLedger`` + ``run_id``
-   replays the first step's effect from the ledger (the handler is not re-called)
-   and the completed run's output is correct.
+1. ``test_exactly_once_effect_resume_through_test_mode`` — a single step fires
+   effect DEBIT (recorded succeeded), then crashes mid-step BEFORE calling
+   RECEIPT. The step does NOT complete so it is not checkpointed; on resume it
+   re-enters the proxy: DEBIT is replayed from the ledger (handler not re-called)
+   and RECEIPT fires fresh. Across both attempts each handler fires exactly once —
+   the ledger replay path is actively exercised by the resume.
 
 2. ``test_effect_divergence_halts_through_test_mode`` — the ledger is pre-seeded
    with a SUCCEEDED entry for a step's first effect; on resume the step makes a
    DIFFERENT effectful call at that position; the run halts ``effect_divergence``.
 
 The REAL safety layer (proxy, ledger, checkpoint) decides every outcome; only
-externals (tool handlers, model responses) are mocked through test_mode. This
-mirrors the crash+resume idiom used in ``tests/acceptance/test_typed_approval.py``:
-the test_mode context is opened twice, each backed by the SAME stores + run_id.
+externals (tool handlers, model responses) are mocked through test_mode. The
+intra-step crash mechanism mirrors ``tests/pipeline/test_effect_resume.py``
+(a crash-flag dict that causes the agent to raise after the first effectful call
+on its first attempt), driven here through ``pipeline.test_mode``.
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ import pytest
 from pydantic import BaseModel
 
 from drawbore import Pipeline, agent
-from drawbore.pipeline.binding import From
 from drawbore.state import (
     InMemoryCheckpointStore,
     InMemoryEffectLedger,
@@ -51,10 +52,6 @@ class EffectResult(BaseModel):
     recorded: bool
 
 
-class FinalResult(BaseModel):
-    ok: bool
-
-
 # ---------------------------------------------------------------------------
 # Tool refs
 # ---------------------------------------------------------------------------
@@ -76,82 +73,27 @@ def _reset_calls():
 
 
 # ---------------------------------------------------------------------------
-# Agents
-# ---------------------------------------------------------------------------
-
-
-@agent(name="effect-step", input=Request, output=EffectResult, tools=[DEBIT])
-async def effect_step(v: Request, tools) -> EffectResult:
-    await tools.call(DEBIT, {"tx_id": v.tx_id, "amount": 100})
-    return EffectResult(recorded=True)
-
-
-@agent(name="finalizer", input=EffectResult, output=FinalResult)
-async def finalizer(v: EffectResult) -> FinalResult:
-    return FinalResult(ok=v.recorded)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
+# Shared policy
 # ---------------------------------------------------------------------------
 
 POLICY = EscalationPolicy(channel="human", target="ops", mode="sync")
 
-DEBIT_ARGS = {"tx_id": "tx-1", "amount": 100}
-
-
-def _pipeline() -> Pipeline:
-    return (
-        Pipeline("effect-ledger-acc", on_failure=POLICY)
-        .add(effect_step)
-        .add(
-            finalizer,
-            inputs={"recorded": From("effect-step.recorded")},
-            depends_on=["effect-step"],
-        )
-    )
-
-
-def _registry_with_failing_finalizer():
-    """Tool registry with a debit tool. The finalizer agent is deterministic
-    (no tools), so we don't need to register anything for it."""
-    from drawbore.tools import ToolRegistry
-
-    reg = ToolRegistry()
-
-    async def debit_handler(args):
-        HANDLER_CALLS["debit"] += 1
-        return {"debited": True}
-
-    # effectful=True is the default, so this tool is tracked by the ledger.
-    reg.register_tool(DEBIT, debit_handler)
-    return reg
-
 
 # ---------------------------------------------------------------------------
-# Case 1: exactly-once on resume through test_mode
+# Case 1: exactly-once on resume through test_mode (intra-step crash)
 # ---------------------------------------------------------------------------
 
 
 async def test_exactly_once_effect_resume_through_test_mode():
-    """Crash AFTER effect-step's effect is recorded, before finalizer completes.
+    """A single step fires effect DEBIT (recorded), then crashes mid-step BEFORE
+    calling RECEIPT. The step does NOT complete so it is not checkpointed.
 
-    The crash is simulated by the finalizer failing on the first run (so the
-    run halts, effect-step's effect is recorded in the ledger, but effect-step
-    is also checkpointed as completed — the ledger replay path verifies that on
-    resume the proxy returns the recorded output without calling the handler
-    again).
-
-    Concretely: effect-step checkpoints succeeded after calling DEBIT once;
-    the run halts at a SECOND step that raises. On resume, effect-step is
-    short-circuited by the checkpoint (not re-run), and finalizer completes
-    correctly. DEBIT's handler fires exactly once total.
+    On resume the step re-enters the proxy: DEBIT is replayed from the ledger
+    (handler not re-called) and RECEIPT fires fresh. Across both attempts each
+    handler fires exactly once — the assertion on DEBIT is load-bearing on the
+    ledger: without ``effect_ledger=`` the resumed step would call ``debit_handler``
+    a second time, making ``HANDLER_CALLS["debit"] == 2``.
     """
-    # We need the crash to happen AFTER effect-step records its effect but
-    # BEFORE the overall run completes. The simplest way: use a real registry
-    # so the debit handler is real, and make the finalizer fail on first call
-    # then succeed on second. We do this with a module-level flag.
-
     crash_flag = {"crashed": False}
 
     from drawbore.tools import ToolRegistry
@@ -162,34 +104,38 @@ async def test_exactly_once_effect_resume_through_test_mode():
         HANDLER_CALLS["debit"] += 1
         return {"debited": True}
 
-    reg.register_tool(DEBIT, debit_handler)
+    async def receipt_handler(args):
+        HANDLER_CALLS["receipt"] += 1
+        return {"receipt": True}
 
-    @agent(name="crashing-finalizer", input=EffectResult, output=FinalResult)
-    async def crashing_finalizer(v: EffectResult) -> FinalResult:
+    reg.register_tool(DEBIT, debit_handler)
+    reg.register_tool(RECEIPT, receipt_handler)
+
+    @agent(name="two-effect-step", input=Request, output=EffectResult, tools=[DEBIT, RECEIPT])
+    async def two_effect_step(v: Request, tools) -> EffectResult:
+        await tools.call(DEBIT, {"tx_id": v.tx_id, "amount": 100})
+        # Simulate an intra-step crash after DEBIT is recorded succeeded but
+        # before RECEIPT is attempted. The step does not complete (it raises),
+        # so it is not checkpointed — on resume the proxy re-enters it and
+        # DEBIT must replay from the ledger, not re-fire the handler.
         if not crash_flag["crashed"]:
             crash_flag["crashed"] = True
-            raise RuntimeError("simulated crash after effect recorded")
-        return FinalResult(ok=v.recorded)
+            raise RuntimeError("simulated crash after DEBIT, before RECEIPT")
+        await tools.call(RECEIPT, {"tx_id": v.tx_id})
+        return EffectResult(recorded=True)
 
-    pipe = (
-        Pipeline("effect-acc-crash", on_failure=POLICY, registry=reg)
-        .add(effect_step)
-        .add(
-            crashing_finalizer,
-            inputs={"recorded": From("effect-step.recorded")},
-            depends_on=["effect-step"],
-        )
-    )
+    pipe = Pipeline("effect-acc-replay", on_failure=POLICY, registry=reg).add(two_effect_step)
 
     store = InMemoryCheckpointStore()
     ledger = InMemoryEffectLedger()
     run_id = "acc-effect-1"
 
-    # Phase 1: effect-step fires DEBIT (recorded in ledger), crashing-finalizer raises.
-    # allow_real_tools so the real debit_handler (and its counter) runs through the
-    # proxy — mocking it would bypass the counter and prove nothing about re-fires.
+    # Phase 1: DEBIT fires and is recorded succeeded, then the step raises.
+    # allow_real_tools so the real debit_handler and receipt_handler run through
+    # the proxy and ledger — mocking them would bypass the call counters and make
+    # the exactly-once assertion meaningless.
     async with pipe.test_mode(
-        allow_real_tools=[DEBIT],
+        allow_real_tools=[DEBIT, RECEIPT],
     ) as tp:
         first = await tp.run(
             Request(tx_id="tx-1"),
@@ -199,19 +145,23 @@ async def test_exactly_once_effect_resume_through_test_mode():
         )
 
     assert first.status in ("halted", "escalated"), f"expected halt, got {first.status}"
-    # effect-step was checkpointed as completed even though the run halted.
-    assert store.is_completed(run_id, 0), "effect-step should be checkpointed"
-    # The ledger recorded the debit call.
+    # Step raised before completing — it must NOT be checkpointed.
+    assert not store.is_completed(run_id, 0), (
+        "step must not be checkpointed after an intra-step crash"
+    )
+    # The ledger has the DEBIT entry recorded as SUCCEEDED.
     entry = ledger.entry_at(run_id, 0, 0)
-    assert entry is not None, "DEBIT should be in the ledger"
+    assert entry is not None, "DEBIT should be recorded in the ledger"
     assert entry.status == EffectStatus.SUCCEEDED
-    # Handler fired exactly once.
+    # Only DEBIT fired; RECEIPT was never reached.
     assert HANDLER_CALLS["debit"] == 1
+    assert HANDLER_CALLS["receipt"] == 0
 
     # Phase 2: resume on the SAME store + ledger + run_id.
-    # effect-step is short-circuited by the checkpoint; DEBIT is never re-invoked.
+    # The step is not checkpointed, so it re-runs. The proxy replays DEBIT from
+    # the ledger (handler not called again); RECEIPT fires fresh.
     async with pipe.test_mode(
-        allow_real_tools=[DEBIT],
+        allow_real_tools=[DEBIT, RECEIPT],
     ) as tp:
         second = await tp.run(
             Request(tx_id="tx-1"),
@@ -221,11 +171,16 @@ async def test_exactly_once_effect_resume_through_test_mode():
         )
 
     assert second.status == "completed", f"expected completed, got {second.status}"
-    # effect-step was restored from checkpoint: its effect was NOT re-fired.
-    # DEBIT's handler count remains 1 across both runs.
+    # DEBIT: handler called exactly once total (replayed on second attempt).
+    # This assertion is load-bearing on the ledger: without effect_ledger= the
+    # resumed step would call debit_handler again, making HANDLER_CALLS["debit"] == 2.
     assert HANDLER_CALLS["debit"] == 1, (
         f"DEBIT handler fired {HANDLER_CALLS['debit']} times; expected exactly 1 "
-        "(should replay from ledger, not re-call handler)"
+        "(should replay from ledger on resume, not re-call the handler)"
+    )
+    # RECEIPT: handler called exactly once (only on the second attempt).
+    assert HANDLER_CALLS["receipt"] == 1, (
+        f"RECEIPT handler fired {HANDLER_CALLS['receipt']} times; expected exactly 1"
     )
     # Smoke: audit trace is legible.
     legible = second.audit_trace.legible()
@@ -309,5 +264,7 @@ async def test_effect_divergence_halts_through_test_mode():
     assert result.halt_code == "effect_divergence", (
         f"expected effect_divergence, got {result.halt_code!r}"
     )
-    # The handler must NOT have been called (divergence caught before re-fire).
-    assert HANDLER_CALLS["debit"] == 0
+    # The divergence is caught by the proxy before any handler runs: the mock
+    # for DEBIT is never invoked. (The HANDLER_CALLS counter is not asserted
+    # here because mock_tools overrides the registered debit_handler — only the
+    # halt_code check above is load-bearing on the divergence detection.)
