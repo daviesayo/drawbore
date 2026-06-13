@@ -70,9 +70,11 @@ from .corpus import (
     RegressionCase,
     RegressionCorpus,
     SafetyProperty,
-    _recompute_hash,
+    _assert_append_link,
+    _validate_sponsor,
+    _walk_chain,
 )
-from .errors import CorpusIntegrityError, RatchetError
+from .errors import CorpusIntegrityError
 
 
 class FileRegressionCorpus(RegressionCorpus):
@@ -269,26 +271,10 @@ class FileRegressionCorpus(RegressionCorpus):
         Atomically writes the case file; updates the in-memory cache only after
         a successful write so a crash mid-write never corrupts the cache.
         """
-        if not sponsor or not sponsor.strip():
-            raise RatchetError(
-                "corpus appends require a named human sponsor (got a blank string)"
-            )
+        _validate_sponsor(sponsor)
         self._ensure_loaded()
-        current_root = (
-            self._cases_cache[-1].case_hash  # type: ignore[index]
-            if self._cases_cache
-            else GENESIS
-        )
-        if case.predecessor_hash != current_root:
-            raise RatchetError(
-                f"case {case.case_id!r} declares predecessor "
-                f"{case.predecessor_hash} but the chain tail is {current_root}"
-            )
-        if _recompute_hash(case) != case.case_hash:
-            raise RatchetError(
-                f"case {case.case_id!r} carries a hash that does not match its "
-                f"content (recomputed hash differs)"
-            )
+        current_root = self.root()
+        _assert_append_link(case, current_root)
         # Write to disk first; update cache only after a successful write.
         index = len(self._cases_cache) + 1  # type: ignore[arg-type]
         path = self._root / self._case_filename(index)
@@ -307,16 +293,4 @@ class FileRegressionCorpus(RegressionCorpus):
         """
         # _load_from_disk already wraps ValueError/KeyError as CorpusIntegrityError.
         cases, _ = self._load_from_disk()
-        tail = GENESIS
-        for case in cases:
-            if case.predecessor_hash != tail:
-                raise CorpusIntegrityError(
-                    f"chain break at case {case.case_id!r}: predecessor "
-                    f"{case.predecessor_hash} != expected {tail}"
-                )
-            if _recompute_hash(case) != case.case_hash:
-                raise CorpusIntegrityError(
-                    f"content tamper at case {case.case_id!r}: stored hash does "
-                    f"not match recomputed hash"
-                )
-            tail = case.case_hash
+        _walk_chain(cases)

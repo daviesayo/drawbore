@@ -125,6 +125,45 @@ def _recompute_hash(case: RegressionCase) -> str:
     )
 
 
+def _validate_sponsor(sponsor: str) -> None:
+    """Fail closed on a blank or whitespace-only sponsor name."""
+    if not sponsor or not sponsor.strip():
+        raise RatchetError(
+            "corpus appends require a named human sponsor (got a blank string)"
+        )
+
+
+def _assert_append_link(case: RegressionCase, current_root: str) -> None:
+    """Guard the predecessor-hash and content-hash invariants for an append."""
+    if case.predecessor_hash != current_root:
+        raise RatchetError(
+            f"case {case.case_id!r} declares predecessor {case.predecessor_hash} "
+            f"but the chain tail is {current_root}"
+        )
+    if _recompute_hash(case) != case.case_hash:
+        raise RatchetError(
+            f"case {case.case_id!r} carries a hash that does not match its "
+            f"content (recomputed hash differs)"
+        )
+
+
+def _walk_chain(cases: list[RegressionCase]) -> None:
+    """Re-walk the hash chain; raise CorpusIntegrityError on any mismatch."""
+    tail = GENESIS
+    for case in cases:
+        if case.predecessor_hash != tail:
+            raise CorpusIntegrityError(
+                f"chain break at case {case.case_id!r}: predecessor "
+                f"{case.predecessor_hash} != expected {tail}"
+            )
+        if _recompute_hash(case) != case.case_hash:
+            raise CorpusIntegrityError(
+                f"content tamper at case {case.case_id!r}: stored hash does not "
+                f"match recomputed hash"
+            )
+        tail = case.case_hash
+
+
 def mocks_fingerprint(baseline_mocks: Mapping) -> str:
     """The pinned fingerprint of a benign mock bundle: canonical-JSON SHA-256
     over exactly the two serializable keys, both always present. A bundle that
@@ -194,6 +233,23 @@ def derive_cases(
     tail = predecessor if predecessor is not None else GENESIS
     counter = 0
     saw_loop = False
+
+    def _seal(prop: SafetyProperty, cc: ContainmentCase):
+        nonlocal tail, counter
+        counter += 1
+        case = seal_case(
+            case_id=f"c-{counter:03d}",
+            property=prop,
+            containment_case=cc,
+            baseline_fingerprint=baseline_fp,
+            initial_hash=initial_hash,
+            baseline_mocks_hash=mocks_hash,
+            derived_at=derived_at,
+            predecessor_hash=tail,
+        )
+        tail = case.case_hash
+        cases.append(case)
+
     for node in pipeline.steps:
         if isinstance(node, JoinNode):
             continue
@@ -206,22 +262,6 @@ def derive_cases(
         if not is_one_shot or saw_loop or spec.name not in executed_ok:
             continue
         observed = result.outputs[spec.name].model_dump(mode="json")
-
-        def _seal(prop: SafetyProperty, cc: ContainmentCase):
-            nonlocal tail, counter
-            counter += 1
-            case = seal_case(
-                case_id=f"c-{counter:03d}",
-                property=prop,
-                containment_case=cc,
-                baseline_fingerprint=baseline_fp,
-                initial_hash=initial_hash,
-                baseline_mocks_hash=mocks_hash,
-                derived_at=derived_at,
-                predecessor_hash=tail,
-            )
-            tail = case.case_hash
-            cases.append(case)
 
         bad = dict(observed)
         bad.pop(_first_required_field(spec.output), None)
@@ -307,34 +347,11 @@ class InMemoryRegressionCorpus(RegressionCorpus):
         return self._cases[-1].case_hash if self._cases else GENESIS
 
     def append(self, case: RegressionCase, *, sponsor: str) -> None:
-        if not sponsor or not sponsor.strip():
-            raise RatchetError(
-                "corpus appends require a named human sponsor (got a blank string)"
-            )
-        if case.predecessor_hash != self.root():
-            raise RatchetError(
-                f"case {case.case_id!r} declares predecessor {case.predecessor_hash} "
-                f"but the chain tail is {self.root()}"
-            )
-        if _recompute_hash(case) != case.case_hash:
-            raise RatchetError(
-                f"case {case.case_id!r} carries a hash that does not match its "
-                f"content (recomputed hash differs)"
-            )
+        _validate_sponsor(sponsor)
+        current_root = self.root()
+        _assert_append_link(case, current_root)
         self._cases.append(case)
         self._sponsors.append(sponsor.strip())
 
     def verify(self) -> None:
-        tail = GENESIS
-        for case in self._cases:
-            if case.predecessor_hash != tail:
-                raise CorpusIntegrityError(
-                    f"chain break at case {case.case_id!r}: predecessor "
-                    f"{case.predecessor_hash} != expected {tail}"
-                )
-            if _recompute_hash(case) != case.case_hash:
-                raise CorpusIntegrityError(
-                    f"content tamper at case {case.case_id!r}: stored hash does not "
-                    f"match recomputed hash"
-                )
-            tail = case.case_hash
+        _walk_chain(self._cases)
