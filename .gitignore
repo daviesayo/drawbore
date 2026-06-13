@@ -19,5 +19,5 @@ __pycache__/
 .vscode/
 DECISIONS.md
 
-# Advisor handoff plans (reference private strategy — kept in the private overlay)
-plans/
+# Advisor handoff plans (symlink into the private overlay; reference private strategy)
+plans
