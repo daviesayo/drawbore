@@ -12,8 +12,12 @@ import json
 from typing import Any
 
 
+def _canonical_json(value: Any) -> str:
+    """Return the canonical JSON string for ``value`` (sort_keys=True, default=str)."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
 def estimate_tokens(value: Any) -> int:
     """Return a deterministic, dependency-free token estimate for ``value`` (at
     least 1)."""
-    serialized = json.dumps(value, sort_keys=True, default=str)
-    return max(1, len(serialized) // 4)
+    return max(1, len(_canonical_json(value)) // 4)
