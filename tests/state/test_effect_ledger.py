@@ -90,3 +90,11 @@ def test_effect_exceptions_map_to_codes():
     assert halt_reason_for(EffectDivergenceError("x")) == "effect_divergence"
     assert halt_reason_for(EffectUnresolvedError("x")) == "effect_unresolved"
     assert halt_reason_for(EffectLedgerWriteError("x")) == "effect_ledger_error"
+
+
+def test_record_succeeded_without_pending_raises_ledger_write_error():
+    import pytest
+    from drawbore.state.effect_ledger import InMemoryEffectLedger, EffectLedgerWriteError
+    led = InMemoryEffectLedger()
+    with pytest.raises(EffectLedgerWriteError):
+        led.record_succeeded("r", 0, 0, output=1)

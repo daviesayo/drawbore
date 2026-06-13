@@ -164,8 +164,9 @@ class InMemoryEffectLedger(EffectLedger):
     ) -> None:
         existing = self._entries.get((run_id, step, position))
         if existing is None:
-            raise KeyError(
-                f"no pending effect entry at ({run_id!r}, step={step}, pos={position})"
+            raise EffectLedgerWriteError(
+                f"no pending effect entry at ({run_id!r}, step={step}, pos={position}):"
+                " record_pending must be called before record_succeeded"
             )
         self._entries[(run_id, step, position)] = existing.model_copy(
             update={"status": EffectStatus.SUCCEEDED, "output": output}
