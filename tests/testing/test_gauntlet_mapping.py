@@ -10,8 +10,14 @@ def _audit(*tool_calls_per_step, schema_violations=0):
     return SimpleNamespace(step_records=tuple(steps), schema_violations=schema_violations)
 
 
-def _result(status, reason="", audit=None):
-    return SimpleNamespace(status=status, reason=reason, audit_trace=audit)
+def _metrics(*denial_results):
+    """Build a minimal RunMetrics stub with structured ToolCallMetric-like entries."""
+    calls = tuple(SimpleNamespace(result=r) for r in denial_results)
+    return SimpleNamespace(tool_calls=calls)
+
+
+def _result(status, reason="", audit=None, metrics=None):
+    return SimpleNamespace(status=status, reason=reason, audit_trace=audit, metrics=metrics)
 
 
 def test_completed_is_not_contained():
@@ -27,9 +33,9 @@ def test_denial_labels_map_regardless_of_status():
     for label, expect in (("denied:breaker", Containment.DENIED_BREAKER),
                           ("denied:scope", Containment.DENIED_SCOPE),
                           ("denied:token", Containment.DENIED_TOKEN)):
-        a = _audit([f"t:a (invoke) -> {label}"])
-        assert _verdict(_result("halted", reason="circuit_breaker: x", audit=a)) is expect
-        assert _verdict(_result("escalated", reason="circuit_breaker: x", audit=a)) is expect
+        m = _metrics(label)
+        assert _verdict(_result("halted", reason="circuit_breaker: x", metrics=m)) is expect
+        assert _verdict(_result("escalated", reason="circuit_breaker: x", metrics=m)) is expect
 
 
 def test_hard_class_wins_over_escalated_status():
@@ -52,7 +58,8 @@ def test_plain_halts_map_by_reason():
 
 
 def test_denial_precedence_over_schema_is_synthetic_but_guarded():
-    # SYNTHETIC: a denied tool aborts the loop immediately, so a denial label and a
+    # SYNTHETIC: a denied tool aborts the loop immediately, so a denial and a
     # schema violation cannot co-occur in a real run. The stub is defensive only.
-    a = _audit(["t:a (invoke) -> denied:scope"], schema_violations=1)
-    assert _verdict(_result("halted", reason="tool_access: x", audit=a)) is Containment.DENIED_SCOPE
+    a = _audit(schema_violations=1)
+    m = _metrics("denied:scope")
+    assert _verdict(_result("halted", reason="tool_access: x", audit=a, metrics=m)) is Containment.DENIED_SCOPE
