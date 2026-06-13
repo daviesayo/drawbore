@@ -8,10 +8,11 @@ change forces re-attestation by the human sponsor.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
 
-from drawbore._canon import canonical_fingerprint
+from pydantic import BaseModel
 
 LifecycleState = Literal["draft", "active", "suspended", "decommissioned"]
 RiskTier = Literal["low", "medium", "high", "critical"]
@@ -37,6 +38,19 @@ class AgentIdentity:
     tenant: str | None = None
 
 
+def _schema_fingerprint(model: type[BaseModel]) -> str:
+    """A structural fingerprint of a model for re-attestation.
+
+    Uses Pydantic's JSON schema, which recursively expands nested models, so a
+    structural change anywhere in the (possibly nested) schema — a field added or
+    removed, a type changed, a required-ness flipped — changes the fingerprint and
+    forces re-attestation. ``model_json_schema()`` is the correct tool for
+    change-detection evidence (it is only barred as the type-assignability oracle,
+    which this is not). ``sort_keys`` makes the serialization deterministic.
+    """
+    return json.dumps(model.model_json_schema(), sort_keys=True)
+
+
 def attestation_surface(spec) -> tuple:
     """Compute the re-attestation surface of an agent spec: the tuple of
     (tool declarations, input schema, output schema, risk tier). A change
@@ -45,14 +59,10 @@ def attestation_surface(spec) -> tuple:
 
     ``spec`` is a ``drawbore.agent.AgentSpec``; typed loosely to keep ``identity``
     a leaf with no import of ``agent``.
-
-    Uses ``model_json_schema()`` which recursively expands nested models, so a
-    structural change anywhere in the (possibly nested) schema forces re-attestation.
-    ``canonical_fingerprint`` applies ``sort_keys=True`` for deterministic output.
     """
     return (
         tuple(sorted(spec.tools)),
-        canonical_fingerprint(spec.input.model_json_schema()),
-        canonical_fingerprint(spec.output.model_json_schema()),
+        _schema_fingerprint(spec.input),
+        _schema_fingerprint(spec.output),
         spec.risk_tier,
     )
