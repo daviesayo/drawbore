@@ -16,7 +16,7 @@ from drawbore.audit import AuditSink, InMemoryAuditSink
 from drawbore.escalation import ApprovalDecision
 from drawbore.evidence import EvidenceStore, InMemoryEvidenceStore
 from drawbore.llm import CredentialChecker, LLMRuntimeConfig, TokenUsage
-from drawbore.state import CheckpointStore
+from drawbore.state import CheckpointStore, EffectLedger
 from drawbore.identity import IdentityRegistry
 from drawbore.tools import TrustLabel
 
@@ -90,6 +90,7 @@ class TestPipeline:
         evidence_store: EvidenceStore | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
         approval: "ApprovalDecision | None" = None,
+        effect_ledger: "EffectLedger | None" = None,
     ):
         mode = self._mode
         rid = run_id or mode._next_run_id()
@@ -116,6 +117,7 @@ class TestPipeline:
             registry_override=registry,
             initial_trust=initial_trust,
             approval=approval,
+            effect_ledger=effect_ledger,
         )
 
 
