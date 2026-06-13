@@ -787,6 +787,8 @@ class Pipeline:
         attempt is not re-surfaced (its step is skipped as already completed).
         """
         # Unpack the run context into the local names the scheduler body uses.
+        # Keep this block in sync with the _RunContext fields: a new field added to
+        # the dataclass must be unpacked here (or read via ctx.<field>) to be wired.
         run_id = ctx.run_id
         checkpoints = ctx.checkpoints
         identities = ctx.identities
