@@ -120,6 +120,29 @@ class CheckpointStore(ABC):
         """
         return TrustLabel.UNTRUSTED
 
+    def commit_step(
+        self,
+        run_id: str,
+        step: int,
+        *,
+        output: BaseModel,
+        trust: TrustLabel,
+        seal: StepSeal | None = None,
+    ) -> None:
+        """Record a completed step's output, trust, and (optionally) seal.
+
+        The default body delegates to ``step_succeeded``, ``record_trust``, and
+        (when *seal* is not ``None``) ``record_seal`` in sequence. Durable stores
+        that write to persistent storage SHOULD override this method to merge all
+        three fields in a single atomic write (one transaction / ``os.replace``),
+        so a crash between any two of the individual calls cannot leave a step in
+        an inconsistent state.
+        """
+        self.step_succeeded(run_id, step, output)
+        self.record_trust(run_id, step, trust)
+        if seal is not None:
+            self.record_seal(run_id, step, seal)
+
     def record_approval_request(self, run_id: str, request: dict[str, Any]) -> None:
         """Store the JSON form of the pending approval request for ``run_id``.
 

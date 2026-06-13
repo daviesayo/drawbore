@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   risk assessment, schema-halt, and a typed redline decision, all under
   `pipeline.test_mode(...)`. Backed by a 10-case acceptance suite
   (`tests/acceptance/test_contract_review.py`).
+- `CheckpointStore.commit_step(...)`: persist a step's output, trust, and seal in
+  one atomic operation. The default delegates to the existing setters; durable
+  stores such as `FileCheckpointStore` override it to a single write, closing the
+  crash window the store's atomicity contract already promised.
 
 ### Documentation
 
