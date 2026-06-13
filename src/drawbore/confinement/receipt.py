@@ -258,34 +258,6 @@ def _evaluate(
     )
 
 
-def _fingerprint_payload(
-    run_id: str,
-    status: str,
-    footprint_fp: str,
-    declared_facts: tuple[tuple[str, str, str, str], ...],
-    step_agents: tuple[str | None, ...],
-    observed_calls: tuple[ObservedCall, ...],
-    verdict: ConfinementVerdict,
-) -> list[Any]:
-    """The FIXED, POSITIONAL, JSON-safe payload the fingerprint is taken over.
-
-    Omits ``receipt_fingerprint`` itself. ``declared_facts`` elements are
-    4-tuples (``list(t)``); ``step_agents`` elements are scalars (``list(...)``,
-    NOT per-element splitting). Both the minter and ``verify`` build this exact
-    list (NOT ``model_dump()`` of the whole receipt, whose dict-key sorting
-    differs).
-    """
-    return [
-        run_id,
-        status,
-        footprint_fp,
-        sorted([list(t) for t in declared_facts]),
-        list(step_agents),
-        [c.model_dump(mode="json") for c in observed_calls],
-        verdict.model_dump(mode="json"),
-    ]
-
-
 def _fingerprint(
     run_id: str,
     status: str,
@@ -295,16 +267,24 @@ def _fingerprint(
     observed_calls: tuple[ObservedCall, ...],
     verdict: ConfinementVerdict,
 ) -> str:
+    """Return the canonical fingerprint over a FIXED, POSITIONAL, JSON-safe payload.
+
+    Omits ``receipt_fingerprint`` itself. ``declared_facts`` elements are
+    4-tuples (``list(t)``); ``step_agents`` elements are scalars (``list(...)``,
+    NOT per-element splitting). Both the minter and ``verify`` build this exact
+    list (NOT ``model_dump()`` of the whole receipt, whose dict-key sorting
+    differs).
+    """
     return canonical_fingerprint(
-        _fingerprint_payload(
+        [
             run_id,
             status,
             footprint_fp,
-            declared_facts,
-            step_agents,
-            observed_calls,
-            verdict,
-        )
+            sorted([list(t) for t in declared_facts]),
+            list(step_agents),
+            [c.model_dump(mode="json") for c in observed_calls],
+            verdict.model_dump(mode="json"),
+        ]
     )
 
 

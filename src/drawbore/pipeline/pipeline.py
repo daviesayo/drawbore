@@ -58,6 +58,7 @@ from drawbore.identity import IdentityRegistry
 from .binding import From
 from .conditions import When
 from .executor import StepExecutor
+from .graph import JoinNode, JoinError
 from .outcome import Halt
 
 if TYPE_CHECKING:
@@ -151,8 +152,6 @@ class Pipeline:
         A ``JoinNode`` is also accepted here and routed to ``_add_join``; agents and
         joins share one node namespace.
         """
-        from .graph import JoinNode
-
         if isinstance(agent, JoinNode):
             return self._add_join(agent)
         if agent.name in self._by_name:
@@ -235,15 +234,11 @@ class Pipeline:
 
     def _node_output_model(self, name: str) -> type[BaseModel]:
         """Output model for a node (agent step or join) by name."""
-        from .graph import JoinNode
-
         node = self._by_name[name]
         return node.output if isinstance(node, JoinNode) else node.agent.spec.output
 
     def _node_name(self, node) -> str:
         """The registered name of a step or join node."""
-        from .graph import JoinNode
-
         return node.name if isinstance(node, JoinNode) else node.agent.name
 
     def _static_check(self, agent: Agent, inputs: dict[str, From]) -> None:
@@ -312,7 +307,6 @@ class Pipeline:
         """Stable SHA-256 over the node list (names + binding refs + when refs).
         Resume is valid only against the same topology."""
         import hashlib, json
-        from .graph import JoinNode
         shape = []
         for s in self.steps:
             if isinstance(s, JoinNode):
@@ -384,9 +378,73 @@ class Pipeline:
         self._dispatcher.dispatch(package, policy)
         return package
 
+    def _mint_approval_request(
+        self,
+        *,
+        run_id: str,
+        name: str,
+        question: str,
+        approval_reason: str,
+        escalation_reason: str,
+        validated_input: Any,
+        validated_out: BaseModel,
+        outputs: dict,
+        agent_id: "str | None",
+        ledger: TaintLedger,
+        idx: int,
+    ) -> "ApprovalRequest":
+        """Mint a new ``ApprovalRequest`` for a step gate.
+
+        ``approval_reason`` is stored on the request itself; ``escalation_reason``
+        is passed to ``build_escalation`` (the two differ for the
+        confidence-below-threshold gate vs the explicit approval gate).
+        """
+        return ApprovalRequest(
+            request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+            question=question,
+            reason=approval_reason,
+            package_legible=build_escalation(
+                step=name, reason=escalation_reason,
+                received=validated_input,
+                attempted_output=validated_out,
+                trace=tuple(outputs.keys()), agent_id=agent_id,
+            ).legible(),
+            proposed_output=validated_out.model_dump(mode="json"),
+            proposed_output_trust=ledger.scope(run_id, idx).value,
+        )
+
+    def _commit_step(
+        self,
+        *,
+        outputs: dict,
+        output_trust: dict,
+        name: str,
+        validated_out: BaseModel,
+        trust_value: TrustLabel,
+        checkpoints: "CheckpointStore | None",
+        run_id: str,
+        idx: int,
+        step: Step,
+        registry: ToolRegistry,
+        ledger_builder: ResumeLedgerBuilder,
+    ) -> None:
+        """Record a step's output and commit it to the checkpoint store.
+
+        Updates ``outputs`` and ``output_trust`` in place, persists to
+        ``checkpoints`` when one is wired, and appends to ``ledger_builder``
+        (``sealed=True`` with a store, ``sealed=False`` without).
+        """
+        outputs[name] = validated_out
+        output_trust[name] = trust_value
+        if checkpoints is not None:
+            checkpoints.step_succeeded(run_id, idx, validated_out)
+            checkpoints.record_trust(run_id, idx, output_trust[name])
+            checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
+            ledger_builder.executed(idx, name, sealed=True)
+        else:
+            ledger_builder.executed(idx, name, sealed=False)
+
     def _evaluate_join(self, node, present, outputs):
-        from drawbore.schema import validate
-        from .graph import JoinError
         if node.policy == "exactly_one":
             if len(present) != 1:
                 raise JoinError(f"exactly_one over {node.sources}: {len(present)} ran")
@@ -491,9 +549,8 @@ class Pipeline:
                 # degrades to footprint=None (unverifiable receipt) rather than
                 # escaping run(). The mint itself is total but also guarded so a
                 # future implementation change can never surface through run().
-                from .graph import JoinNode as _JoinNode
                 _step_agents = tuple(
-                    s.agent.name if not isinstance(s, _JoinNode) else None
+                    s.agent.name if not isinstance(s, JoinNode) else None
                     for s in self.steps
                 )
                 try:
@@ -502,7 +559,7 @@ class Pipeline:
                     _agents_map = {
                         s.agent.name: s.agent
                         for s in self.steps
-                        if not isinstance(s, _JoinNode)
+                        if not isinstance(s, JoinNode)
                     }
                     _footprint = _eff_auth(_to_config(self, agents=_agents_map))
                 except Exception:
@@ -561,11 +618,10 @@ class Pipeline:
         # run registry yet.  A per-run overlay is built to avoid mutating the shared
         # pipeline registry across runs.
         if evidence_store is not None and not registry.has(EVIDENCE_TOOL_REF):
-            from .graph import JoinNode as _JN
             if any(
                 EVIDENCE_TOOL_REF in s.agent.spec.tools
                 for s in self.steps
-                if not isinstance(s, _JN)
+                if not isinstance(s, JoinNode)
             ):
                 _overlay = ToolRegistry()
                 _overlay._tools.update(registry._tools)
@@ -588,16 +644,13 @@ class Pipeline:
         # Expose the proxy's per-call log (tool, operation, duration, disposition) on
         # RunResult.metrics via the recorder, which reads it at build time.
         recorder.bind_tool_log(proxy.log)
-        state = RunState(run_id=run_id)
         if checkpoints is not None:
-            from .graph import JoinNode as _JoinNode
-
             # Hand the store the live output model for each step so a durable
             # store can reconstruct typed outputs without reading a class path
             # off disk. The in-memory default ignores this (it keeps live
             # objects); a serialising store uses it for safe deserialisation.
             checkpoints.bind_models(run_id, {
-                idx: (node_.output if isinstance(node_, _JoinNode)
+                idx: (node_.output if isinstance(node_, JoinNode)
                       else node_.agent.spec.output)
                 for idx, node_ in enumerate(self.steps)
             })
@@ -644,7 +697,7 @@ class Pipeline:
                 # agent step must match its stored seal BEFORE anything runs.
                 refusals: list[tuple[int, str, tuple[str, ...]]] = []
                 for i, node_ in enumerate(self.steps):
-                    if isinstance(node_, _JoinNode):
+                    if isinstance(node_, JoinNode):
                         # Joins are covered by the topology fingerprint and are
                         # never sealed, but a checkpoint-completed join still
                         # belongs in the ledger in index order — record it here
@@ -711,10 +764,8 @@ class Pipeline:
             proxy=proxy, issuer=issuer, registry=registry,
             engine=engine, evidence_store=evidence_store,
         )
-        from .graph import JoinNode, JoinError
         for idx, node in enumerate(self.steps):
             name = node.name if isinstance(node, JoinNode) else node.agent.name
-            state.step = idx
 
             if isinstance(node, JoinNode):
                 # The checkpoint-resume short-circuit applies to a completed join
@@ -959,18 +1010,19 @@ class Pipeline:
                             applied_hash if approval.verdict == "amended" else None
                         ),
                     )
-                    outputs[name] = validated_out
-                    output_trust[name] = join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx))
-                    checkpoints.step_succeeded(run_id, idx, validated_out)
-                    checkpoints.record_trust(run_id, idx, output_trust[name])
-                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
-                    ledger_builder.executed(idx, name, sealed=True)
+                    self._commit_step(
+                        outputs=outputs, output_trust=output_trust, name=name,
+                        validated_out=validated_out,
+                        trust_value=join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx)),
+                        checkpoints=checkpoints, run_id=run_id, idx=idx,
+                        step=step, registry=registry, ledger_builder=ledger_builder,
+                    )
                     steps_run += 1
                     continue
 
             payload = build_input(
                 step.inputs, outputs, initial=initial,
-                predecessor=self._node_name(self.steps[idx - 1]) if idx > 0 else None,
+                predecessor=predecessor,
             )
             step_start = time.monotonic()
             outcome = await executor.execute(
@@ -979,7 +1031,6 @@ class Pipeline:
             )
             step_duration = time.monotonic() - step_start
             if isinstance(outcome, Halt):
-                state.error_count += 1
                 # If the failing step ran tools (e.g. a denied in-loop call),
                 # record a FAILED step so the audit trail shows what it did — the
                 # SAME rendering the success path uses, so a denied call reads
@@ -1079,22 +1130,21 @@ class Pipeline:
                         # decided resume (completing the step before control reaches
                         # this check), so this branch never re-fires on that path.
                         # Trust is pinned exactly as the explicit gate mint does.
-                        request = ApprovalRequest(
-                            request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+                        request = self._mint_approval_request(
+                            run_id=run_id, name=name,
                             question=(
                                 f"Step '{name}' produced confidence {confidence}, "
                                 f"below the threshold {self._confidence_threshold}; "
                                 "approve, amend, or reject the proposed output?"
                             ),
-                            reason="confidence_below_threshold",
-                            package_legible=build_escalation(
-                                step=name, reason=reason,
-                                received=outcome.validated_input,
-                                attempted_output=validated_out,
-                                trace=tuple(outputs.keys()), agent_id=agent_id,
-                            ).legible(),
-                            proposed_output=validated_out.model_dump(mode="json"),
-                            proposed_output_trust=ledger.scope(run_id, idx).value,
+                            approval_reason="confidence_below_threshold",
+                            escalation_reason=reason,
+                            validated_input=outcome.validated_input,
+                            validated_out=validated_out,
+                            outputs=outputs,
+                            agent_id=agent_id,
+                            ledger=ledger,
+                            idx=idx,
                         )
                         checkpoints.record_approval_request(
                             run_id, request.model_dump(mode="json")
@@ -1122,18 +1172,17 @@ class Pipeline:
             # always mints a fresh request (a second mint on a store-less run
             # is info-only — no decision can arrive without a store).
             if step.agent.spec.requires_human_approval:
-                request = ApprovalRequest(
-                    request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+                request = self._mint_approval_request(
+                    run_id=run_id, name=name,
                     question=f"Approve the proposed output of step '{name}'?",
-                    reason="requires_human_approval",
-                    package_legible=build_escalation(
-                        step=name, reason="requires_human_approval",
-                        received=outcome.validated_input,
-                        attempted_output=validated_out,
-                        trace=tuple(outputs.keys()), agent_id=agent_id,
-                    ).legible(),
-                    proposed_output=validated_out.model_dump(mode="json"),
-                    proposed_output_trust=ledger.scope(run_id, idx).value,
+                    approval_reason="requires_human_approval",
+                    escalation_reason="requires_human_approval",
+                    validated_input=outcome.validated_input,
+                    validated_out=validated_out,
+                    outputs=outputs,
+                    agent_id=agent_id,
+                    ledger=ledger,
+                    idx=idx,
                 )
                 if checkpoints is not None:
                     checkpoints.record_approval_request(run_id, request.model_dump(mode="json"))
@@ -1156,15 +1205,13 @@ class Pipeline:
                 duration_seconds=step_duration,
                 tokens=audit.tokens, cost=audit.cost,
             )
-            outputs[name] = validated_out
-            output_trust[name] = ledger.scope(run_id, idx)
-            if checkpoints is not None:
-                checkpoints.step_succeeded(run_id, idx, validated_out)
-                checkpoints.record_trust(run_id, idx, output_trust[name])
-                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
-                ledger_builder.executed(idx, name, sealed=True)
-            else:
-                ledger_builder.executed(idx, name, sealed=False)
+            self._commit_step(
+                outputs=outputs, output_trust=output_trust, name=name,
+                validated_out=validated_out,
+                trust_value=ledger.scope(run_id, idx),
+                checkpoints=checkpoints, run_id=run_id, idx=idx,
+                step=step, registry=registry, ledger_builder=ledger_builder,
+            )
             steps_run += 1
 
         if approval is not None and not approval_consumed:

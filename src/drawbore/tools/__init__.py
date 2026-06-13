@@ -3,6 +3,7 @@
 from .access import (
     RunContext,
     ToolContext,
+    authorized_invoke,
     build_tool_context,
     current_idempotency_key,
     get_run_context,
@@ -32,6 +33,7 @@ def unclassified_effectful_tools(tool_registry: ToolRegistry) -> tuple[str, ...]
 
 __all__ = [
     # registry / execution surface
+    "authorized_invoke",
     "registry",
     "Tool",
     "ToolRegistry",

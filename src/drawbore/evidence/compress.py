@@ -11,19 +11,18 @@ against the input model and records the decision (layering).
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 from .errors import EvidenceStoreError, EvidenceTransformError
 from .policy import EvidencePolicy
 from .records import EvidenceDecision, EvidenceHandle
 from .store import EvidenceStore
-from .tokens import estimate_tokens
+from .tokens import _canonical_json, estimate_tokens
 from .transforms import get_transform
 
 
 def _hash(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()[:16]
 
 
 def _passthrough(policy: EvidencePolicy, payload: Any, reason: str) -> tuple[Any, EvidenceDecision, None]:

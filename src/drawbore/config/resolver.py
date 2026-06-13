@@ -27,9 +27,7 @@ from drawbore.tools import registry as default_registry
 from .catalog import AgentCatalog, resolve_ref
 from .errors import ConfigResolutionError
 from .fingerprint import schema_fingerprint
-from .models import AgentConfig, PipelineConfig, StepConfig
-
-_SCHEMA_VERSION = 1
+from .models import AgentConfig, NodeConfig, PipelineConfig, SCHEMA_VERSION, StepConfig
 
 
 def from_json(
@@ -63,7 +61,7 @@ def from_config(
     registry: Any = None,
 ) -> Pipeline:
     """Resolve a parsed manifest into a live ``Pipeline`` (fail-closed)."""
-    if config.schema_version != _SCHEMA_VERSION:
+    if config.schema_version != SCHEMA_VERSION:
         raise ConfigResolutionError(f"unknown config schema_version {config.schema_version}")
 
     reg = registry if registry is not None else default_registry
@@ -139,14 +137,7 @@ def from_config(
         depends_on = _validate_input_mode(idx, step, config.steps)
         inputs = _build_inputs(step)
         when = (
-            When(
-                step.when.ref,
-                equals=step.when.equals,
-                in_=step.when.in_,
-                is_true=step.when.is_true,
-                gt=step.when.gt,
-                lt=step.when.lt,
-            )
+            When(**step.when.model_dump())
             if step.when is not None
             else None
         )
@@ -261,7 +252,7 @@ def _validate_input_mode(idx: int, step: StepConfig, steps: list[StepConfig]) ->
     if idx == 0:
         raise ConfigResolutionError("step 0 cannot use source='previous'")
     prev = steps[idx - 1]
-    predecessor = prev.name if prev.kind == "join" else prev.agent
+    predecessor = _node_name(prev)
     if inp.agent != predecessor:
         raise ConfigResolutionError(
             f"step {idx} source='previous' must name the immediate predecessor "
@@ -273,6 +264,10 @@ def _validate_input_mode(idx: int, step: StepConfig, steps: list[StepConfig]) ->
             f"got {step.depends_on}"
         )
     return [predecessor]
+
+
+def _node_name(node: NodeConfig) -> str:
+    return node.name if node.kind == "join" else node.agent
 
 
 def _build_inputs(step: StepConfig) -> dict[str, From]:

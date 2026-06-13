@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from .errors import EvidenceRetrievalError
 from .records import EvidenceHandle
+from .tokens import _canonical_json
 
 
 class EvidenceStore(ABC):
@@ -145,5 +146,4 @@ def _iter_rows(original: Any) -> list[Any]:
 
 
 def _searchable(item: Any) -> str:
-    import json
-    return json.dumps(item, sort_keys=True, default=str)
+    return _canonical_json(item)

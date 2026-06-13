@@ -93,6 +93,10 @@ class CheckpointStore(ABC):
         read off disk, so deserialisation can never import a caller-controlled
         type. The pipeline calls this once at the start of a run that supplies a
         store, before any ``output_of``.
+
+        **Contract for durable stores:** ``output_of`` MUST raise ``KeyError``
+        when no model has been bound for the requested step. Callers must call
+        ``bind_models`` before restoring any step output from a durable store.
         """
         return None
 

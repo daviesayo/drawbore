@@ -131,15 +131,14 @@ def test_run_ids_with_unsafe_characters_are_isolated(tmp_path):
 
 def test_output_of_without_bound_model_fails_closed(tmp_path):
     """A durable store cannot fabricate a type: reading an output before its
-    live model is bound must raise, never guess or import a persisted path."""
+    live model is bound must raise KeyError, never guess or import a persisted path."""
+    import pytest
+
     s1 = FileCheckpointStore(tmp_path)
     s1.step_succeeded("r1", 0, Out(v=1))
     s2 = FileCheckpointStore(tmp_path)
-    try:
+    with pytest.raises(KeyError, match="no output model bound"):
         s2.output_of("r1", 0)
-    except Exception:
-        return
-    raise AssertionError("output_of must fail closed when no model is bound")
 
 
 def test_torn_temp_write_does_not_corrupt_a_prior_good_checkpoint(tmp_path):

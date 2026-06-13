@@ -14,6 +14,7 @@ from drawbore.agent import Agent
 from drawbore.escalation import EscalationPolicy
 from drawbore.evidence import EvidencePolicy
 from drawbore.pipeline import Pipeline
+from drawbore.pipeline.binding import From
 from drawbore.pipeline.graph import JoinNode
 from drawbore.pipeline.pipeline import Step
 
@@ -29,11 +30,10 @@ from .models import (
     OnFailureConfig,
     PipelineConfig,
     PipelineMetaConfig,
+    SCHEMA_VERSION,
     StepConfig,
     StepInputConfig,
 )
-
-_SCHEMA_VERSION = 1
 
 
 def to_config(
@@ -59,7 +59,7 @@ def to_config(
     ]
 
     return PipelineConfig(
-        schema_version=_SCHEMA_VERSION, pipeline=meta,
+        schema_version=SCHEMA_VERSION, pipeline=meta,
         agents=agent_configs, steps=step_configs,
     )
 
@@ -107,11 +107,19 @@ def _agent_config(agent: Agent, ref: str) -> AgentConfig:
     )
 
 
+def _node_name(node: "Step | JoinNode") -> str:
+    return node.name if isinstance(node, JoinNode) else node.agent.name
+
+
+def _binding_config(src: From) -> BindingConfig:
+    return BindingConfig.model_validate({"from": src.ref})
+
+
 def _node_config(idx: int, node: "Step | JoinNode", nodes: list["Step | JoinNode"]):
     """Emit a ``JoinConfig`` for a join node, else delegate to the agent ``_step_config``."""
     if isinstance(node, JoinNode):
         bindings = (
-            {f: BindingConfig.model_validate({"from": src.ref}) for f, src in node.inputs.items()}
+            {f: _binding_config(src) for f, src in node.inputs.items()}
             if node.inputs
             else None
         )
@@ -158,18 +166,14 @@ def _derive_input(
     """Return ``(tagged_input, expected_depends_on)`` for a live step."""
     if step.inputs:
         bindings = {
-            field: BindingConfig.model_validate({"from": src.ref})
+            field: _binding_config(src)
             for field, src in step.inputs.items()
         }
         expected = sorted({src.agent for src in step.inputs.values()})
         return StepInputConfig(bindings=bindings), expected
     if idx == 0:
         return StepInputConfig(source="initial"), []
-    predecessor = (
-        steps[idx - 1].name
-        if isinstance(steps[idx - 1], JoinNode)
-        else steps[idx - 1].agent.name
-    )
+    predecessor = _node_name(steps[idx - 1])
     return StepInputConfig(source="previous", agent=predecessor), [predecessor]
 
 

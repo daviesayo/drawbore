@@ -138,273 +138,241 @@ def _join(path: str, seg: str) -> str:
 # Recursive comparator (the heart)
 # ---------------------------------------------------------------------------
 
-def _compare(old: Any, new: Any, path: str, agent: str, out: list[SchemaRelaxation]) -> None:
-    """Compare two schema nodes. Appends a SchemaRelaxation for every change that
-    is provably or conservatively a relaxation (prove narrowing-or-equal, else flag)."""
-    if not isinstance(old, dict) or not isinstance(new, dict):
-        # A boolean schema or a category change at the node level. If it changed at
-        # all and we cannot reason about it structurally, fail closed.
-        if old != new:
-            out.append(
-                SchemaRelaxation(
-                    agent,
-                    path or "/",
-                    "<node>",
-                    old,
-                    new,
+class _SchemaComparator:
+    """Carries the per-agent context (agent name and accumulator) so the recursive
+    comparison methods only take ``path`` as a per-call argument."""
+
+    def __init__(self, agent: str, out: list[SchemaRelaxation]) -> None:
+        self._agent = agent
+        self._out = out
+
+    def _flag(self, path: str, keyword: str, ov: Any, nv: Any, reason: str) -> None:
+        self._out.append(SchemaRelaxation(self._agent, path, keyword, ov, nv, reason))
+
+    def compare(self, old: Any, new: Any, path: str) -> None:
+        """Compare two schema nodes. Appends a SchemaRelaxation for every change that
+        is provably or conservatively a relaxation (prove narrowing-or-equal, else flag)."""
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            # A boolean schema or a category change at the node level. If it changed at
+            # all and we cannot reason about it structurally, fail closed.
+            if old != new:
+                self._flag(
+                    path or "/", "<node>", old, new,
                     "schema node changed to a non-object form; cannot prove narrowing",
                 )
-            )
-        return
+            return
 
-    for key in sorted(set(old) | set(new)):
-        in_old = key in old
-        in_new = key in new
+        for key in sorted(set(old) | set(new)):
+            in_old = key in old
+            in_new = key in new
 
-        if in_old and in_new:
-            ov, nv = old[key], new[key]
-            if ov == nv:
-                continue  # identical subtree: no relaxation possible
-            if key in _METADATA:
-                continue  # annotations do not constrain the accepted-input set
-            _compare_changed(key, ov, nv, path, agent, out, old)
+            if in_old and in_new:
+                ov, nv = old[key], new[key]
+                if ov == nv:
+                    continue  # identical subtree: no relaxation possible
+                if key in _METADATA:
+                    continue  # annotations do not constrain the accepted-input set
+                self._compare_changed(key, ov, nv, path, old)
 
-        elif in_new:  # category 2: added keyword -> a new constraint can only narrow
-            # (the field-presence exception is for added PROPERTY names, handled
-            # inside _compare_properties; a new schema *keyword* always narrows).
-            continue
-
-        else:  # category 3: removed keyword -> flag unless on the metadata ignore-list
-            if key in _METADATA:
+            elif in_new:  # category 2: added keyword -> a new constraint can only narrow
+                # (the field-presence exception is for added PROPERTY names, handled
+                # inside _compare_properties; a new schema *keyword* always narrows).
                 continue
-            out.append(
-                SchemaRelaxation(
-                    agent,
-                    _join(path, key),
-                    key,
-                    old[key],
-                    None,
+
+            else:  # category 3: removed keyword -> flag unless on the metadata ignore-list
+                if key in _METADATA:
+                    continue
+                self._flag(
+                    _join(path, key), key, old[key], None,
                     "constraint removed; the accepted-input set may widen",
                 )
-            )
 
+    def _compare_changed(
+        self,
+        key: str,
+        ov: Any,
+        nv: Any,
+        path: str,
+        old_parent: dict[str, Any],
+    ) -> None:
+        """Category 1: a keyword present in BOTH whose value changed."""
+        # --- sub-schema containers: descend structurally ---
+        if key == "properties":
+            self._compare_properties(ov, nv, path, old_parent.get("additionalProperties"))
+            return
+        if key in ("$defs", "definitions"):
+            self._compare_defs(ov, nv, path, key)
+            return
+        if key == "items":
+            self._compare_items(ov, nv, _join(path, "items"))
+            return
+        if key == "additionalProperties":
+            self._compare_additional_properties(ov, nv, _join(path, key))
+            return
 
-def _compare_changed(
-    key: str,
-    ov: Any,
-    nv: Any,
-    path: str,
-    agent: str,
-    out: list[SchemaRelaxation],
-    old_parent: dict[str, Any],
-) -> None:
-    """Category 1: a keyword present in BOTH whose value changed."""
-    # --- sub-schema containers: descend structurally ---
-    if key == "properties":
-        _compare_properties(ov, nv, path, agent, out, old_parent.get("additionalProperties"))
-        return
-    if key in ("$defs", "definitions"):
-        _compare_defs(ov, nv, path, agent, out, key)
-        return
-    if key == "items":
-        _compare_items(ov, nv, _join(path, "items"), agent, out)
-        return
-    if key == "additionalProperties":
-        _compare_additional_properties(ov, nv, _join(path, key), agent, out)
-        return
+        here = _join(path, key)
 
-    here = _join(path, key)
+        def flag(reason: str) -> None:
+            self._flag(here, key, ov, nv, reason)
 
-    def flag(reason: str) -> None:
-        out.append(SchemaRelaxation(agent, here, key, ov, nv, reason))
-
-    # --- decidable numeric / length / count bounds ---
-    if key in _UPPER_BOUNDS:
-        if _num(ov) and _num(nv):
-            if nv > ov:
-                flag("upper bound raised; larger values now accepted")
-            # nv < ov -> tightened -> pass
-        else:
-            flag("non-numeric upper-bound change; cannot prove narrowing")
-        return
-    if key in _LOWER_BOUNDS:
-        if _num(ov) and _num(nv):
-            if nv < ov:
-                flag("lower bound lowered; smaller values now accepted")
-            # nv > ov -> tightened -> pass
-        else:
-            flag("non-numeric lower-bound change; cannot prove narrowing")
-        return
-
-    if key == "multipleOf":
-        if _num(ov) and _num(nv) and ov > 0 and nv > 0:
-            if _divides(nv, ov):       # new divides old -> multiples-of-new superset -> wider
-                flag("multipleOf widened; more values now divisible")
-            elif _divides(ov, nv):     # old divides new -> narrower -> pass
-                pass
+        # --- decidable numeric / length / count bounds ---
+        if key in _UPPER_BOUNDS:
+            if _num(ov) and _num(nv):
+                if nv > ov:
+                    flag("upper bound raised; larger values now accepted")
+                # nv < ov -> tightened -> pass
             else:
-                flag("multipleOf changed with no divisibility relation; some values newly accepted")
-        else:
-            flag("non-positive/non-numeric multipleOf change; cannot prove narrowing")
-        return
+                flag("non-numeric upper-bound change; cannot prove narrowing")
+            return
+        if key in _LOWER_BOUNDS:
+            if _num(ov) and _num(nv):
+                if nv < ov:
+                    flag("lower bound lowered; smaller values now accepted")
+                # nv > ov -> tightened -> pass
+            else:
+                flag("non-numeric lower-bound change; cannot prove narrowing")
+            return
 
-    if key == "enum":
-        old_set, new_set = _value_set(ov), _value_set(nv)
-        if old_set is None or new_set is None:
-            flag("malformed enum change; cannot prove narrowing")
-        elif not new_set <= old_set:
-            flag("enum admits value(s) absent from the old set")
-        # new_set subset of old_set -> narrower -> pass
-        return
+        if key == "multipleOf":
+            if _num(ov) and _num(nv) and ov > 0 and nv > 0:
+                if _divides(nv, ov):       # new divides old -> multiples-of-new superset -> wider
+                    flag("multipleOf widened; more values now divisible")
+                elif _divides(ov, nv):     # old divides new -> narrower -> pass
+                    pass
+                else:
+                    flag("multipleOf changed with no divisibility relation; some values newly accepted")
+            else:
+                flag("non-positive/non-numeric multipleOf change; cannot prove narrowing")
+            return
 
-    if key == "const":
-        # A changed const means the new accepted value differs from the old one,
-        # so a value old rejected is now accepted.
-        flag("const value changed; a previously rejected value is now accepted")
-        return
+        if key == "enum":
+            old_set, new_set = _value_set(ov), _value_set(nv)
+            if old_set is None or new_set is None:
+                flag("malformed enum change; cannot prove narrowing")
+            elif not new_set <= old_set:
+                flag("enum admits value(s) absent from the old set")
+            # new_set subset of old_set -> narrower -> pass
+            return
 
-    if key == "required":
-        if isinstance(ov, list) and isinstance(nv, list):
-            removed = set(ov) - set(nv)
-            if removed:
-                flag(f"required field(s) {sorted(removed)} dropped; now optional")
-            # only additions -> narrower -> pass
-        else:
-            flag("malformed required change; cannot prove narrowing")
-        return
+        if key == "const":
+            # A changed const means the new accepted value differs from the old one,
+            # so a value old rejected is now accepted.
+            flag("const value changed; a previously rejected value is now accepted")
+            return
 
-    # --- fail-closed tail: opaque/undecidable keywords ---
-    if key in _OPAQUE:
-        flag("undecidable change; treated as a relaxation (fail-closed)")
-        return
+        if key == "required":
+            if isinstance(ov, list) and isinstance(nv, list):
+                removed = set(ov) - set(nv)
+                if removed:
+                    flag(f"required field(s) {sorted(removed)} dropped; now optional")
+                # only additions -> narrower -> pass
+            else:
+                flag("malformed required change; cannot prove narrowing")
+            return
 
-    # Any keyword we do not explicitly handle, whose value changed, fails closed.
-    flag("unrecognised keyword changed; treated as a relaxation (fail-closed)")
+        # --- fail-closed tail: opaque/undecidable keywords ---
+        if key in _OPAQUE:
+            flag("undecidable change; treated as a relaxation (fail-closed)")
+            return
 
+        # Any keyword we do not explicitly handle, whose value changed, fails closed.
+        flag("unrecognised keyword changed; treated as a relaxation (fail-closed)")
 
-def _compare_properties(
-    ov: Any,
-    nv: Any,
-    path: str,
-    agent: str,
-    out: list[SchemaRelaxation],
-    old_additional: Any,
-) -> None:
-    """Descend a ``properties`` object. New/removed property NAMES are governed by
-    the field-presence rule against the OLD parent object's ``additionalProperties``
-    — NOT by the generic added/removed keyword rules."""
-    base = _join(path, "properties")
-    if not isinstance(ov, dict) or not isinstance(nv, dict):
-        if ov != nv:
-            out.append(
-                SchemaRelaxation(
-                    agent, base, "properties", ov, nv,
-                    "malformed properties change; cannot prove narrowing",
-                )
-            )
-        return
+    def _compare_properties(
+        self,
+        ov: Any,
+        nv: Any,
+        path: str,
+        old_additional: Any,
+    ) -> None:
+        """Descend a ``properties`` object. New/removed property NAMES are governed by
+        the field-presence rule against the OLD parent object's ``additionalProperties``
+        — NOT by the generic added/removed keyword rules."""
+        base = _join(path, "properties")
+        if not isinstance(ov, dict) or not isinstance(nv, dict):
+            if ov != nv:
+                self._flag(base, "properties", ov, nv,
+                           "malformed properties change; cannot prove narrowing")
+            return
 
-    for name in sorted(set(ov) | set(nv)):
-        here = _join(base, name)
-        if name in ov and name in nv:
-            _compare(ov[name], nv[name], here, agent, out)
-        elif name in nv:  # new property key
-            # Field-presence rule: a new field is a relaxation UNLESS the old parent's
-            # additionalProperties was provably open — True, absent (None), or an empty
-            # allow-all schema ({}). A False value or a non-empty constraining schema
-            # dict must flag (fail-closed): adding an explicit field with a looser schema
-            # than the constraint admits inputs the old schema rejected.
-            old_ap_open = old_additional is True or old_additional is None or old_additional == {}
-            if not old_ap_open:
-                out.append(
-                    SchemaRelaxation(
-                        agent, here, "properties", None, nv[name],
+        for name in sorted(set(ov) | set(nv)):
+            here = _join(base, name)
+            if name in ov and name in nv:
+                self.compare(ov[name], nv[name], here)
+            elif name in nv:  # new property key
+                # Field-presence rule: a new field is a relaxation UNLESS the old parent's
+                # additionalProperties was provably open — True, absent (None), or an empty
+                # allow-all schema ({}). A False value or a non-empty constraining schema
+                # dict must flag (fail-closed): adding an explicit field with a looser schema
+                # than the constraint admits inputs the old schema rejected.
+                old_ap_open = old_additional is True or old_additional is None or old_additional == {}
+                if not old_ap_open:
+                    self._flag(
+                        here, "properties", None, nv[name],
                         "new field accepted where the old schema did not provably accept it"
                         " (additionalProperties was not open)",
                     )
-                )
-        else:  # removed property key
-            # Removing a field drops its type/shape constraint. Under a closed
-            # object (additionalProperties:false) the field becomes forbidden — a
-            # provable narrowing (pass). Otherwise the field may still appear,
-            # now unconstrained -> wider -> flag.
-            if old_additional is not False:
-                out.append(
-                    SchemaRelaxation(
-                        agent, here, "properties", ov[name], None,
+            else:  # removed property key
+                # Removing a field drops its type/shape constraint. Under a closed
+                # object (additionalProperties:false) the field becomes forbidden — a
+                # provable narrowing (pass). Otherwise the field may still appear,
+                # now unconstrained -> wider -> flag.
+                if old_additional is not False:
+                    self._flag(
+                        here, "properties", ov[name], None,
                         "field definition removed; its constraint no longer applies and the field may still appear",
                     )
-                )
 
+    def _compare_defs(
+        self,
+        ov: Any,
+        nv: Any,
+        path: str,
+        keyword: str,
+    ) -> None:
+        """Descend a ``$defs``/``definitions`` block. Only entries present on BOTH sides
+        are compared: a one-sided entry is either a renamed model (its ``$ref`` change is
+        flagged at the referring path) or a dead/unreferenced definition (ignored). The
+        walk follows the literal dict structure and never resolves ``$ref``, so a
+        recursive model cannot cause infinite recursion."""
+        base = _join(path, keyword)
+        if not isinstance(ov, dict) or not isinstance(nv, dict):
+            if ov != nv:
+                self._flag(base, keyword, ov, nv,
+                           "malformed definitions block change; cannot prove narrowing")
+            return
+        for name in sorted(set(ov) & set(nv)):
+            if ov[name] != nv[name]:
+                self.compare(ov[name], nv[name], _join(base, name))
 
-def _compare_defs(
-    ov: Any,
-    nv: Any,
-    path: str,
-    agent: str,
-    out: list[SchemaRelaxation],
-    keyword: str,
-) -> None:
-    """Descend a ``$defs``/``definitions`` block. Only entries present on BOTH sides
-    are compared: a one-sided entry is either a renamed model (its ``$ref`` change is
-    flagged at the referring path) or a dead/unreferenced definition (ignored). The
-    walk follows the literal dict structure and never resolves ``$ref``, so a
-    recursive model cannot cause infinite recursion."""
-    base = _join(path, keyword)
-    if not isinstance(ov, dict) or not isinstance(nv, dict):
+    def _compare_items(self, ov: Any, nv: Any, path: str) -> None:
+        """Descend an ``items`` slot (a single sub-schema or a positional tuple)."""
+        if isinstance(ov, dict) and isinstance(nv, dict):
+            self.compare(ov, nv, path)
+            return
+        if isinstance(ov, list) and isinstance(nv, list) and len(ov) == len(nv):
+            for i, (a, b) in enumerate(zip(ov, nv)):
+                if a != b:
+                    self.compare(a, b, _join(path, str(i)))
+            return
         if ov != nv:
-            out.append(
-                SchemaRelaxation(
-                    agent, base, keyword, ov, nv,
-                    "malformed definitions block change; cannot prove narrowing",
-                )
-            )
-        return
-    for name in sorted(set(ov) & set(nv)):
-        if ov[name] != nv[name]:
-            _compare(ov[name], nv[name], _join(base, name), agent, out)
+            self._flag(path, "items", ov, nv, "items shape changed; cannot prove narrowing")
 
-
-def _compare_items(
-    ov: Any, nv: Any, path: str, agent: str, out: list[SchemaRelaxation]
-) -> None:
-    """Descend an ``items`` slot (a single sub-schema or a positional tuple)."""
-    if isinstance(ov, dict) and isinstance(nv, dict):
-        _compare(ov, nv, path, agent, out)
-        return
-    if isinstance(ov, list) and isinstance(nv, list) and len(ov) == len(nv):
-        for i, (a, b) in enumerate(zip(ov, nv)):
-            if a != b:
-                _compare(a, b, _join(path, str(i)), agent, out)
-        return
-    if ov != nv:
-        out.append(
-            SchemaRelaxation(
-                agent, path, "items", ov, nv,
-                "items shape changed; cannot prove narrowing",
-            )
-        )
-
-
-def _compare_additional_properties(
-    ov: Any, nv: Any, path: str, agent: str, out: list[SchemaRelaxation]
-) -> None:
-    """Compare ``additionalProperties``. A rise in permissiveness (False < schema <
-    True) is a relaxation; a fall is a tightening; an equal-rank schema pair is
-    descended."""
-    ro, rn = _ap_rank(ov), _ap_rank(nv)
-    if rn > ro:
-        out.append(
-            SchemaRelaxation(
-                agent, path, "additionalProperties", ov, nv,
+    def _compare_additional_properties(self, ov: Any, nv: Any, path: str) -> None:
+        """Compare ``additionalProperties``. A rise in permissiveness (False < schema <
+        True) is a relaxation; a fall is a tightening; an equal-rank schema pair is
+        descended."""
+        ro, rn = _ap_rank(ov), _ap_rank(nv)
+        if rn > ro:
+            self._flag(
+                path, "additionalProperties", ov, nv,
                 "additionalProperties loosened; previously rejected fields now accepted",
             )
-        )
-        return
-    if rn < ro:
-        return  # tightened
-    if isinstance(ov, dict) and isinstance(nv, dict):
-        _compare(ov, nv, path, agent, out)
+            return
+        if rn < ro:
+            return  # tightened
+        if isinstance(ov, dict) and isinstance(nv, dict):
+            self.compare(ov, nv, path)
 
 
 # ---------------------------------------------------------------------------
@@ -418,12 +386,10 @@ def schema_relaxation_diff(old: PipelineConfig, new: PipelineConfig) -> SchemaRe
     new_agents = {a.name: a for a in new.agents}
     relaxations: list[SchemaRelaxation] = []
     for name in sorted(set(old_agents) & set(new_agents)):
-        _compare(
+        _SchemaComparator(name, relaxations).compare(
             old_agents[name].input_schema,
             new_agents[name].input_schema,
             "",
-            name,
-            relaxations,
         )
     relaxations.sort(key=lambda r: (r.agent, r.path, r.keyword))
     return SchemaRelaxationDiff(

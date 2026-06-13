@@ -164,3 +164,12 @@ def test_authority_module_imports_no_runtime_layers():
     for forbidden in ("drawbore.tools", "drawbore.orchestration", "drawbore.llm",
                       "drawbore.audit", "drawbore.observability", "drawbore.evidence"):
         assert forbidden not in src, f"authority.py must not import {forbidden}"
+
+
+def test_evidence_retrieve_ref_matches_retrieval_module():
+    """EVIDENCE_RETRIEVE_REF in config.authority must equal EVIDENCE_TOOL_REF in
+    evidence.retrieval — the config layer duplicates it as a literal to preserve the
+    import boundary; this test catches any divergence."""
+    from drawbore.config.authority import EVIDENCE_RETRIEVE_REF
+    from drawbore.evidence.retrieval import EVIDENCE_TOOL_REF
+    assert EVIDENCE_RETRIEVE_REF == EVIDENCE_TOOL_REF

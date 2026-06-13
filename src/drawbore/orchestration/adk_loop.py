@@ -116,6 +116,11 @@ async def _run_one_attempt(
     re-ask, an object that still fails the schema is RETURNED so the pipeline's
     authoritative output-schema gate halts ``schema_violation``; an answer that is
     still not a usable object halts ``model_error``."""
+    # Reset per-attempt model-turn / failure / tool markers for a clean pass.
+    tool_loop.turns.clear()
+    tool_loop.failures.clear()
+    tool_loop.tool_invoked.clear()
+
     request = build_model_request(spec, payload, model_chain=(model,))
 
     # Expose each declared tool to the model under a provider-safe ALIAS (a function
@@ -139,7 +144,7 @@ async def _run_one_attempt(
         tools=tools,
         before_model_callback=before_model,
         after_model_callback=after_model,
-        before_tool_callback=make_loop_before_tool_callback(tool_loop),
+        before_tool_callback=make_loop_before_tool_callback(tool_loop, exposed_names=tuple(aliases.values())),
     )
 
     session_service = InMemorySessionService()
@@ -296,10 +301,6 @@ async def run_agentic_loop_chain(
     (the inner pass re-raises the captured tool error — never a provider fallback)."""
     attempts: list[ModelAttemptAudit] = []
     for i, attempt in enumerate(chain.attempts):
-        # Reset per-attempt model-turn / failure / tool markers for a clean pass.
-        tool_loop.turns.clear()
-        tool_loop.failures.clear()
-        tool_loop.tool_invoked.clear()
         try:
             output, turns, reprompts = await _run_one_attempt(
                 spec, payload, tool_loop=tool_loop, run_id=run_id,

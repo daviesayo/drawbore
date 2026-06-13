@@ -28,3 +28,12 @@ class EnvCredentialChecker:
         if not credential_env:
             return False
         return bool(os.environ.get(credential_env))
+
+
+class NullCredentialChecker:
+    """Always reports credentials as available. Use when the caller supplies its own
+    gateway and credential checking is not meaningful (e.g. ``LLMRuntime.from_gateway``).
+    Never reads or returns secret values — answers availability only."""
+
+    def has_credential(self, *, provider: str, credential_env: str | None) -> bool:
+        return True

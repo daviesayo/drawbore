@@ -19,19 +19,12 @@ from .attempts import ModelAttemptAudit, ModelAudit
 from .build import build_model_request
 from .classify import classify_provider_exception
 from .config import LLMRuntimeConfig
-from .credentials import CredentialChecker, EnvCredentialChecker
+from .credentials import CredentialChecker, EnvCredentialChecker, NullCredentialChecker
 from .errors import LLMConfigError, LLMError, ModelUnavailableError
 from .gateway import LLMGateway
 from .production import ProductionLLMGateway
 from .request import ModelResponse
 from .resolution import ResolvedModelChain, resolve_chain
-
-
-class _AlwaysAvailable:
-    """Permissive credential checker for the ``from_gateway`` compat path."""
-
-    def has_credential(self, *, provider: str, credential_env: str | None) -> bool:
-        return True
 
 
 class LLMRuntime:
@@ -59,7 +52,7 @@ class LLMRuntime:
         spec must use direct model strings (a ``profile:`` ref would not resolve)."""
         return cls(
             config=LLMRuntimeConfig(), gateway=gateway,
-            credential_checker=_AlwaysAvailable(), model_factory=model_factory,
+            credential_checker=NullCredentialChecker(), model_factory=model_factory,
         )
 
     def resolve(self, spec) -> ResolvedModelChain:

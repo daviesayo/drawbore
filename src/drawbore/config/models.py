@@ -18,6 +18,9 @@ from pydantic import (
 )
 
 
+SCHEMA_VERSION = 1
+
+
 class OnFailureConfig(BaseModel):
     """Serialized ``EscalationPolicy`` (channel/target/mode)."""
 

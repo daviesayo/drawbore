@@ -10,7 +10,7 @@ the structure schema-compatible.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from .policy import EvidencePolicy
 from .tokens import estimate_tokens
@@ -61,32 +61,56 @@ def _row_budget(policy: EvidencePolicy, *, n_lists: int) -> int | None:
     return max(1, total_rows // max(1, n_lists))
 
 
-def _compress_rows(rows: list[Any], max_keep: int | None) -> tuple[list[Any], tuple[str, ...]]:
-    """Keep head + tail + notable rows + an evenly-spaced sample, in original order,
-    deduped by index, optionally capped. Deterministic."""
-    n = len(rows)
-    keep_idx: set[int] = set(range(min(_HEAD, n)))
-    keep_idx |= set(range(max(0, n - _TAIL), n))
-    keep_idx |= {i for i, row in enumerate(rows) if _is_notable(row)}
-    if _SAMPLE > 0 and n > 0:
-        stride = max(1, n // _SAMPLE)
+def _select_items(
+    items: list[Any],
+    max_keep: int | None,
+    *,
+    head: int,
+    tail: int,
+    is_signal: Callable[[Any], bool],
+    sample: int,
+    cap_msg: str,
+    signal_note: str,
+    drop_msg: str,
+) -> tuple[list[Any], tuple[str, ...]]:
+    """Keep head + tail + signal + optional evenly-spaced sample, in original order,
+    deduped by index, optionally capped. Deterministic. ``sample=0`` disables sampling.
+    Message templates use ``{dropped}``, ``{n}``, and ``{signal_dropped}`` as named slots."""
+    n = len(items)
+    keep_idx: set[int] = set(range(min(head, n)))
+    keep_idx |= set(range(max(0, n - tail), n))
+    keep_idx |= {i for i, x in enumerate(items) if is_signal(x)}
+    if sample > 0 and n > 0:
+        stride = max(1, n // sample)
         keep_idx |= set(range(0, n, stride))
     ordered = sorted(keep_idx)
     warnings: list[str] = []
     if max_keep is not None and len(ordered) > max_keep:
         # Deterministic cap: keep the first max_keep selected indices (head-biased).
         dropped_idx = ordered[max_keep:]
-        notable_dropped = sum(1 for i in dropped_idx if _is_notable(rows[i]))
+        signal_dropped = sum(1 for i in dropped_idx if is_signal(items[i]))
         ordered = ordered[:max_keep]
-        msg = f"capped evidence rows: dropped {len(dropped_idx)} selected rows over the output cap"
-        if notable_dropped:
-            # Legibility: an auditor must see that *signal* was dropped,
-            # not just a row count. The originals stay retrievable through the proxy.
-            msg += f" (including {notable_dropped} notable/signal rows)"
+        msg = cap_msg.format(dropped=len(dropped_idx))
+        if signal_dropped:
+            msg += signal_note.format(signal_dropped=signal_dropped)
         warnings.append(msg)
     if len(ordered) < n:
-        warnings.append(f"dropped {n - len(ordered)} of {n} rows (originals retained for retrieval)")
-    return [rows[i] for i in ordered], tuple(warnings)
+        warnings.append(drop_msg.format(dropped=n - len(ordered), n=n))
+    return [items[i] for i in ordered], tuple(warnings)
+
+
+def _compress_rows(rows: list[Any], max_keep: int | None) -> tuple[list[Any], tuple[str, ...]]:
+    """Keep head + tail + notable rows + an evenly-spaced sample, in original order,
+    deduped by index, optionally capped. Deterministic."""
+    return _select_items(
+        rows, max_keep,
+        head=_HEAD, tail=_TAIL, is_signal=_is_notable, sample=_SAMPLE,
+        cap_msg="capped evidence rows: dropped {dropped} selected rows over the output cap",
+        # Legibility: an auditor must see that *signal* was dropped,
+        # not just a row count. The originals stay retrievable through the proxy.
+        signal_note=" (including {signal_dropped} notable/signal rows)",
+        drop_msg="dropped {dropped} of {n} rows (originals retained for retrieval)",
+    )
 
 
 class _JsonRows:
@@ -168,23 +192,13 @@ def _is_severe_line(line: str) -> bool:
 
 
 def _compress_log_lines(lines: list[str], max_keep: int | None) -> tuple[list[str], tuple[str, ...]]:
-    n = len(lines)
-    keep_idx: set[int] = set(range(min(_LOG_HEAD, n)))
-    keep_idx |= set(range(max(0, n - _LOG_TAIL), n))
-    keep_idx |= {i for i, line in enumerate(lines) if _is_severe_line(line)}
-    ordered = sorted(keep_idx)
-    warnings: list[str] = []
-    if max_keep is not None and len(ordered) > max_keep:
-        dropped_idx = ordered[max_keep:]
-        severe_dropped = sum(1 for i in dropped_idx if _is_severe_line(lines[i]))
-        ordered = ordered[:max_keep]
-        msg = f"capped evidence log lines: dropped {len(dropped_idx)} over the output cap"
-        if severe_dropped:
-            msg += f" (including {severe_dropped} severity/error lines)"
-        warnings.append(msg)
-    if len(ordered) < n:
-        warnings.append(f"dropped {n - len(ordered)} of {n} log lines (original retained for retrieval)")
-    return [lines[i] for i in ordered], tuple(warnings)
+    return _select_items(
+        lines, max_keep,
+        head=_LOG_HEAD, tail=_LOG_TAIL, is_signal=_is_severe_line, sample=0,
+        cap_msg="capped evidence log lines: dropped {dropped} over the output cap",
+        signal_note=" (including {signal_dropped} severity/error lines)",
+        drop_msg="dropped {dropped} of {n} log lines (original retained for retrieval)",
+    )
 
 
 class _Logs:
@@ -208,7 +222,7 @@ class _Logs:
     def compress(self, value: Any, policy: EvidencePolicy) -> tuple[Any, tuple[str, ...]]:
         fields = self._log_fields(value)
         max_keep = None
-        if policy.max_output_tokens is not None and fields:
+        if policy.max_output_tokens is not None:
             # ~20 tokens/line, divided across the dict's log fields (honour the budget).
             total_lines = max(1, policy.max_output_tokens // 20)
             max_keep = max(1, total_lines // len(fields))

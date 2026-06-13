@@ -12,7 +12,7 @@ from .config import (
     ModelTarget,
     ProviderConfig,
 )
-from .credentials import CredentialChecker, EnvCredentialChecker
+from .credentials import CredentialChecker, EnvCredentialChecker, NullCredentialChecker
 from .errors import LLMConfigError, LLMError, ModelUnavailableError, content_excerpt
 from .gateway import LLMGateway, LiteLLMGateway
 from .production import ProductionLLMGateway
@@ -42,6 +42,7 @@ __all__ = [
     "JsonValue",
     "CredentialChecker",
     "EnvCredentialChecker",
+    "NullCredentialChecker",
     "ModelAttempt",
     "ResolvedModelChain",
     "resolve_chain",

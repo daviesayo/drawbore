@@ -166,7 +166,6 @@ async def test_post_tool_provider_failure_fails_closed():
     ]
     factory = _two_target_with_first_script(
         first_script=first_turns,
-        raise_on_index=None,
         raise_with=_e.Timeout(message="boom", model="m1", llm_provider="openai"),
         second_turns=[("text", json.dumps({"answer": "should-never-be-used"}))],
         calls=calls,
@@ -203,7 +202,6 @@ async def test_tool_denial_aborts_with_no_provider_fallback():
     first_turns = [("call", "lookup", {})]
     factory = _two_target_with_first_script(
         first_script=first_turns,
-        raise_on_index=None,
         raise_with=None,
         second_turns=[("text", json.dumps({"answer": "should-never-be-used"}))],
         calls=calls,
@@ -248,28 +246,25 @@ async def test_budget_bounds_runaway_attempts():
 
 
 def _two_target_with_first_script(
-    *, first_script, raise_on_index, raise_with, second_turns, calls
+    *, first_script, raise_with, second_turns, calls
 ):
-    """A ``model_factory`` whose FIRST attempt runs ``first_script`` (and optionally
-    raises at ``raise_on_index``) and whose SECOND attempt runs ``second_turns``."""
+    """A ``model_factory`` whose FIRST attempt runs ``first_script`` and whose
+    SECOND attempt runs ``second_turns``."""
     from google.adk.models import BaseLlm, LlmResponse
     from google.genai import types
 
     second_factory = make_scripted_model_factory(second_turns)
 
     class _ScriptOrRaise(BaseLlm):
-        def __init__(self, turns, raise_idx, exc):
+        def __init__(self, turns, exc):
             super().__init__(model="drawbore-test-script-or-raise")
             object.__setattr__(self, "_turns", list(turns))
-            object.__setattr__(self, "_raise_idx", raise_idx)
             object.__setattr__(self, "_exc", exc)
             object.__setattr__(self, "_i", 0)
 
         async def generate_content_async(self, llm_request, stream: bool = False):
             i = self._i
             object.__setattr__(self, "_i", i + 1)
-            if self._raise_idx is not None and i == self._raise_idx:
-                raise self._exc
             if i >= len(self._turns):
                 yield LlmResponse(content=types.Content(
                     role="model", parts=[types.Part(text="{}")]))
@@ -292,7 +287,7 @@ def _two_target_with_first_script(
     def factory(model_name):
         calls.append(model_name)
         if model_name == "m1":
-            return _ScriptOrRaise(first_script, raise_on_index, raise_with)
+            return _ScriptOrRaise(first_script, raise_with)
         return second_factory(model_name)
 
     return factory

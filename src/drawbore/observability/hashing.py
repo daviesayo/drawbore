@@ -11,6 +11,10 @@ import hashlib
 from typing import Any
 
 
+# Three hashers serve distinct purposes — do not mix them up:
+# ``payload_hash`` (here): short repr-based identity tag for spans/proxy-log/audit; NOT order-stable, NOT for fingerprinting.
+# ``canonical_fingerprint``/``text_fingerprint`` (drawbore._canon): config-drift and step-seal fingerprints; NOT for short display tags.
+# ``ledger_args_hash`` (drawbore.state.effect_ledger): order-stable args hash for the effect ledger; NOT for payload identity or config drift.
 def payload_hash(value: Any) -> str:
     """Return a short, stable identity for ``value`` (first 16 hex of its
     sha256(repr))."""

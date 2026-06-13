@@ -13,20 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from drawbore.errors import DrawboreError
-
 from .compat import ChangeKind
+from .errors import DeploymentError
 
 _STAGES: dict[ChangeKind, tuple[str, ...]] = {
     "breaking": ("shadow", "canary", "full"),
     "non_breaking": ("canary", "full"),
 }
-
-
-class DeploymentError(DrawboreError):
-    """Raised on an illegal rollout transition (skipping a stage, advancing an
-    unpassed stage, completing an unfinished rollout, or beginning a new rollout
-    while one is already in flight)."""
 
 
 @dataclass
