@@ -27,3 +27,17 @@ class AuthorityRegressionError(DrawboreError):
     def __init__(self, message: str, *, diff: object) -> None:
         super().__init__(message)
         self.diff = diff
+
+
+class SchemaRelaxationError(Exception):
+    """A pipeline edit relaxed an agent's input schema — it now accepts a strictly
+    wider set of inputs than before. Carries the ``SchemaRelaxationDiff`` so callers
+    can print its ``certificate()``.
+
+    Deliberately a plain ``Exception``, not a ``DrawboreError``: this check runs at
+    admission / CI time only and is never raised by the pipeline runtime, so it
+    carries no ``halt_reason`` and is not part of the runtime halt-code vocabulary."""
+
+    def __init__(self, message: str, *, diff: object) -> None:
+        super().__init__(message)
+        self.diff = diff

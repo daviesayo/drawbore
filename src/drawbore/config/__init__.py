@@ -13,9 +13,19 @@ from .authority import (
     effective_authority,
 )
 from .catalog import AgentCatalog
-from .errors import AuthorityRegressionError, ConfigResolutionError
+from .errors import (
+    AuthorityRegressionError,
+    ConfigResolutionError,
+    SchemaRelaxationError,
+)
 from .models import PipelineConfig
 from .resolver import from_config, from_json
+from .schema_oracle import (
+    SchemaRelaxation,
+    SchemaRelaxationDiff,
+    check_no_schema_relaxation,
+    schema_relaxation_diff,
+)
 from .serialization import to_config, to_json
 
 __all__ = [
@@ -26,11 +36,16 @@ __all__ = [
     "AgentCatalog",
     "ConfigResolutionError",
     "PipelineConfig",
+    "SchemaRelaxation",
+    "SchemaRelaxationDiff",
+    "SchemaRelaxationError",
     "authority_diff",
     "check_no_new_authority",
+    "check_no_schema_relaxation",
     "effective_authority",
     "from_config",
     "from_json",
+    "schema_relaxation_diff",
     "to_config",
     "to_json",
 ]
