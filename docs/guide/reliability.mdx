@@ -88,3 +88,29 @@ clearing the entry.
 An `effect_ledger_error` halt means a durable effect-ledger write failed. The result
 is not returned rather than risk an unrecorded effect — a result returned without a
 durable record would be invisible on the next resume, causing a silent re-fire.
+
+## Schema fingerprints and Pydantic versions
+
+Three safety controls key off SHA-256 fingerprints of Pydantic's
+`model_json_schema()` output: the `resume_drift` step seal, the authority diff and
+config drift check, and the agent re-attestation surface. All three compare a
+fingerprint recorded at one point in time against one computed later.
+
+Pydantic's JSON schema output can change shape across minor releases — enum encoding,
+`$defs` ordering, `anyOf`/`null` representation, and constraint keyword placement have
+all shifted historically. When `model_json_schema()` output changes, a fingerprint
+computed under Pydantic X no longer equals one computed under Pydantic Y even with no
+code change, producing a false-positive `resume_drift` halt, a phantom authority
+regression, or a spurious forced re-attestation.
+
+**Practical guidance:**
+
+- If your deployment persists checkpoints, pipeline manifests, or agent identity
+  records, **pin the Pydantic minor version** (e.g. `pydantic>=2.13,<2.14`) so
+  fingerprints remain stable across restarts.
+- After a deliberate Pydantic upgrade, expect a one-time re-attestation for any
+  agent whose schema fingerprint changes. Re-export any pipeline manifests
+  (`to_json`) and recompute step seals before resuming checkpointed runs.
+- The CI golden tests in `tests/config/test_fingerprint_golden.py` record the
+  Pydantic version they were pinned against. If those tests fail after a version
+  bump, it confirms a schema-output shift rather than a Drawbore regression.
