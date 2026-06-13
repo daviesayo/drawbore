@@ -457,6 +457,11 @@ def mint_receipt(
             receipt_fingerprint=receipt_fp,
         )
     except Exception as exc:  # noqa: BLE001  — fail closed; never let mint raise
+        # Coerce run_id so a caller that violated the ``run_id: str`` contract still
+        # gets a fail-closed receipt rather than a ValidationError out of mint, and
+        # preserve any step->agent map already materialised before the failure.
+        _fail_run_id = run_id if isinstance(run_id, str) else str(run_id)
+        _fail_agents = step_agents if isinstance(step_agents, tuple) else ()
         _empty_facts: tuple[tuple[str, str, str, str], ...] = ()
         _empty_calls: tuple[ObservedCall, ...] = ()
         _fail_verdict = _unverifiable(
@@ -464,14 +469,15 @@ def mint_receipt(
         )
         _empty_fp = footprint_fingerprint(_empty_facts)
         _receipt_fp = _fingerprint(
-            run_id, run_status, _empty_fp, _empty_facts, (), _empty_calls, _fail_verdict
+            _fail_run_id, run_status, _empty_fp, _empty_facts, _fail_agents,
+            _empty_calls, _fail_verdict,
         )
         return ConfinementReceipt(
-            run_id=run_id,
+            run_id=_fail_run_id,
             status=run_status,
             footprint_fingerprint=_empty_fp,
             declared_facts=_empty_facts,
-            step_agents=(),
+            step_agents=_fail_agents,
             observed_calls=_empty_calls,
             verdict=_fail_verdict,
             receipt_fingerprint=_receipt_fp,
