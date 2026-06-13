@@ -415,34 +415,64 @@ def mint_receipt(
     derived) the receipt is UNVERIFIABLE — fail closed. Observed calls are built
     via the shared ``_observed_from_log_entry`` transform so a later offline
     ``verify(receipt, log)`` re-derives identically.
+
+    This function is TOTAL: any internal failure (e.g. a malformed proxy-log
+    entry that causes a ``KeyError`` in ``_observed_from_log_entry``) returns a
+    deterministic UNVERIFIABLE receipt — it never raises and never returns
+    ``None``. The failure receipt carries empty ``declared_facts`` and
+    ``observed_calls``, a valid ``receipt_fingerprint``, and an unverifiable
+    verdict whose reason names the exception class.
     """
-    step_agents = tuple(step_agents)
-    # An empty observed-call set is a legitimate "this run made no tool calls"
-    # attestation. A run with zero calls is CONFINED if the footprint is present;
-    # this is not a missing-evidence case.
-    observed = tuple(_observed_from_log_entry(entry, step_agents) for entry in proxy_log)
-
-    if footprint is None:
-        declared_facts: tuple[tuple[str, str, str, str], ...] = ()
-        verdict = _unverifiable("declared footprint unavailable")
-        footprint_fp = footprint_fingerprint(())
-    else:
-        declared_facts = tuple(
-            sorted((f.subject, f.kind, f.ref, f.scope) for f in footprint.facts)
+    try:
+        step_agents = tuple(step_agents)
+        # An empty observed-call set is a legitimate "this run made no tool calls"
+        # attestation. A run with zero calls is CONFINED if the footprint is present;
+        # this is not a missing-evidence case.
+        observed = tuple(
+            _observed_from_log_entry(entry, step_agents) for entry in proxy_log
         )
-        verdict = _evaluate(observed, declared_facts)
-        footprint_fp = footprint.fingerprint()
 
-    receipt_fp = _fingerprint(
-        run_id, run_status, footprint_fp, declared_facts, step_agents, observed, verdict
-    )
-    return ConfinementReceipt(
-        run_id=run_id,
-        status=run_status,
-        footprint_fingerprint=footprint_fp,
-        declared_facts=declared_facts,
-        step_agents=step_agents,
-        observed_calls=observed,
-        verdict=verdict,
-        receipt_fingerprint=receipt_fp,
-    )
+        if footprint is None:
+            declared_facts: tuple[tuple[str, str, str, str], ...] = ()
+            verdict = _unverifiable("declared footprint unavailable")
+            footprint_fp = footprint_fingerprint(())
+        else:
+            declared_facts = tuple(
+                sorted((f.subject, f.kind, f.ref, f.scope) for f in footprint.facts)
+            )
+            verdict = _evaluate(observed, declared_facts)
+            footprint_fp = footprint.fingerprint()
+
+        receipt_fp = _fingerprint(
+            run_id, run_status, footprint_fp, declared_facts, step_agents, observed, verdict
+        )
+        return ConfinementReceipt(
+            run_id=run_id,
+            status=run_status,
+            footprint_fingerprint=footprint_fp,
+            declared_facts=declared_facts,
+            step_agents=step_agents,
+            observed_calls=observed,
+            verdict=verdict,
+            receipt_fingerprint=receipt_fp,
+        )
+    except Exception as exc:  # noqa: BLE001  — fail closed; never let mint raise
+        _empty_facts: tuple[tuple[str, str, str, str], ...] = ()
+        _empty_calls: tuple[ObservedCall, ...] = ()
+        _fail_verdict = _unverifiable(
+            f"receipt minting failed: {type(exc).__name__}"
+        )
+        _empty_fp = footprint_fingerprint(_empty_facts)
+        _receipt_fp = _fingerprint(
+            run_id, run_status, _empty_fp, _empty_facts, (), _empty_calls, _fail_verdict
+        )
+        return ConfinementReceipt(
+            run_id=run_id,
+            status=run_status,
+            footprint_fingerprint=_empty_fp,
+            declared_facts=_empty_facts,
+            step_agents=(),
+            observed_calls=_empty_calls,
+            verdict=_fail_verdict,
+            receipt_fingerprint=_receipt_fp,
+        )

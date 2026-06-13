@@ -354,3 +354,67 @@ def test_log_binding_rejects_different_run_id():
     v = verify(r, wrong_run_log)
     assert v.status == "unverifiable"
     assert any("run" in u.lower() for u in v.unverifiable)
+
+
+# ---------------------------------------------------------------------------
+# mint_receipt totality — any internal failure returns UNVERIFIABLE, never raises
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_proxy_log_yields_unverifiable_receipt_not_exception():
+    """mint_receipt must be total: a malformed proxy-log entry (missing required
+    keys that _observed_from_log_entry would index) must return a deterministic
+    UNVERIFIABLE ConfinementReceipt — never raise and never return None."""
+    from drawbore.confinement.receipt import mint_receipt
+
+    # A log entry missing every required key ("tool", "operation", "result", "scope").
+    malformed_log = [{"not_the_tool_key": "oops"}]
+
+    receipt = mint_receipt(
+        run_id="fail-1",
+        run_status="completed",
+        proxy_log=malformed_log,
+        step_agents=("A",),
+    )
+
+    assert receipt is not None
+    assert isinstance(receipt, ConfinementReceipt)
+    assert receipt.run_id == "fail-1"
+    assert receipt.status == "completed"
+    assert receipt.verdict.status == "unverifiable"
+    # The failure reason must name the failure.
+    assert receipt.verdict.unverifiable
+    assert any(
+        "minting failed" in u or "receipt minting" in u
+        for u in receipt.verdict.unverifiable
+    )
+    # declared_facts and observed_calls must be empty (safe failure state).
+    assert receipt.declared_facts == ()
+    assert receipt.observed_calls == ()
+    # The receipt_fingerprint must be a valid sha256 string.
+    assert receipt.receipt_fingerprint.startswith("sha256:")
+    # verify() must return unverifiable (not raise).
+    v = verify(receipt)
+    assert v.status == "unverifiable"
+
+
+def test_mint_receipt_totality_none_footprint_preserved():
+    """The existing None-footprint unverifiable path is preserved and not broken
+    by the totality wrapper."""
+    from drawbore.confinement.receipt import mint_receipt
+
+    receipt = mint_receipt(
+        run_id="nofp-1",
+        run_status="completed",
+        proxy_log=[],
+        step_agents=(),
+        footprint=None,
+    )
+
+    assert receipt is not None
+    assert receipt.verdict.status == "unverifiable"
+    assert any("footprint unavailable" in u for u in receipt.verdict.unverifiable)
+    v = verify(receipt)
+    # verify re-derives the verdict: _evaluate((), ()) → confined, but embedded verdict
+    # is unverifiable → "verdict does not re-derive" → overall unverifiable.
+    assert v.status == "unverifiable"

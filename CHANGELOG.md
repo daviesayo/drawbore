@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Tool` now validates `kind` against `{"custom", "builtin", "mcp"}` at
   construction, failing closed on an unknown kind.
 
+### Fixed
+
+- The confinement receipt is now minted on every run without exception: if
+  receipt construction itself fails (for example on a malformed tool-call log
+  entry), `mint_receipt` returns a deterministic `unverifiable` receipt naming the
+  failure instead of allowing the run to fall back to no receipt. The
+  fail-closed `unverifiable` verdict is preferred to a silently missing one.
+
 ### Documentation
 
 - Reliability guide now documents that schema fingerprints (drift detection,
