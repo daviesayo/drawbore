@@ -47,6 +47,7 @@
           "docs/examples/tiny-pipeline",
           "docs/examples/number-chain",
           "docs/examples/remittance-validation",
+          "docs/examples/contract-review",
           "docs/examples/risk-branch",
           "docs/examples/live-openai-smoke"
         ]
