@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Exactly-once effect ledger for durable resume. Effectful tool calls are now
+  recorded in a two-phase pending→succeeded log behind the tool proxy; on
+  crash+resume an already-recorded effect is replayed from the ledger instead of
+  re-firing the handler. New public surface exported from `drawbore.state`:
+  `EffectLedger` (ABC for custom durable backends), `InMemoryEffectLedger`
+  (default in-process implementation), `EffectEntry` (a single ledger record),
+  and `EffectStatus` (`"pending"` / `"succeeded"`). Pass an `effect_ledger=`
+  alongside `checkpoints=` and a fixed `run_id` to opt in. Tools default to
+  `effectful=True` (fail-closed — unclassified tools are never silently
+  double-fired); mark pure read-only tools `effectful=False` so resume
+  re-queries them live. `current_idempotency_key()` (exported from
+  `drawbore.tools`) returns a stable per-call hex key inside an effectful handler
+  for forwarding to remote systems (e.g. a Stripe `Idempotency-Key` header).
+  `unclassified_effectful_tools(registry)` (also from `drawbore.tools`) returns
+  a sorted tuple of tools still at the default `effectful=True`, suitable as a
+  CI assertion. Three new halt codes: `effect_divergence` (resumed call sequence
+  diverged from recorded), `effect_unresolved` (a PENDING entry was found on
+  resume — framework cannot prove exactly-once), and `effect_ledger_error` (a
+  durable ledger write failed). The `evidence://retrieve` builtin is registered
+  `effectful=False`.
+
 ## [0.7.0] - 2026-06-13
 
 ### Added
