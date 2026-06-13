@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Resumable low-confidence approval cycle. A `HasConfidence` step that falls
+  below the pipeline's `confidence_threshold` in sync mode now mints a resumable
+  `ApprovalRequest` and halts with the new `confidence_approval_pending` halt
+  code when a checkpoint store is present, instead of dying terminally. Resolve
+  it with the same `pipeline.run(..., approval=ApprovalDecision(...))`
+  approve/amend/reject cycle as a `requires_human_approval` gate; the approved or
+  amended output is revalidated through the real output-schema gate and keeps its
+  pinned trust label (approval never declassifies). Without a checkpoint store
+  the trigger still halts terminally as `confidence_below_threshold`, and async
+  mode still dispatches a review and continues — both unchanged. A step that
+  declares both a low confidence and `requires_human_approval` always goes
+  through the explicit approval gate.
+
 - Input-schema relaxation detection for safe pipeline evolution
   (`check_no_schema_relaxation` / `schema_relaxation_diff`, exported from
   `drawbore.config`). Compares two serialized pipeline manifests and flags any
