@@ -19,6 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported from `drawbore.escalation`. New halt codes `approval_rejected` and
   `approval_error`.
 
+### Documentation
+
+- Document fan-in input binding in the pipelines guide: explains predecessor-output
+  mode (a step with no `inputs=` bindings takes input from the declaration-order-previous
+  step, not from the topological fork), shows the silent footgun in a fan-in topology
+  where a binding-less branch inherits from its sibling rather than the router, and
+  gives the rule to always declare explicit `From(...)` bindings on every fan-in branch.
+  An omitted binding is caught at run time as a `schema_violation` halt. Companion entry
+  added to the common-mistakes agent guide.
+- Document the tool-call instrumentation seam in the tools guide: every tool call
+  (custom, MCP, and builtin) passes through the proxy, which records timing, input/output
+  hashes, and disposition, surfaced on `result.metrics.tool_calls` and as `execute_tool`
+  OTel spans. Clarify that MCP/builtin handlers are covered identically to custom ones,
+  and note the boundary: no post-registration I/O-mutating middleware hook is provided.
+
+### Fixed
+
+- `evidence://retrieve` is now auto-bound when `evidence_store=store` is passed
+  to `Pipeline.run` (or `test_mode`). Previously, declaring `EVIDENCE_TOOL_REF`
+  in an agent's `tools=` required a separate `register_evidence_tool(registry,
+  store=store)` call at composition time; forgetting it caused a silent "tool not
+  found" failure. Now a single `evidence_store=store` argument is the only wiring
+  point needed — it covers both compression storage and retrieval binding through
+  the same store instance. The two-call workaround continues to work.
+
 ## [0.6.0] - 2026-06-13
 
 ### Added

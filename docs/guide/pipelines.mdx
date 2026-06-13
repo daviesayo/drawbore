@@ -72,6 +72,59 @@ typed field in a routing step and gate on it. Join policies: `exactly_one`,
 `first_by_priority`, `all_present`. See the tested
 `examples/risk_branch/` for a full runnable branch-and-join pipeline.
 
+## Binding inputs in fan-in topologies
+
+When you call `pipeline.add(agent)` with no `inputs=` argument, Drawbore uses
+**predecessor-output mode**: the step's input is taken from the output of the
+step immediately preceding it in **declaration order** — not from any
+topological source.
+
+In a sequential pipeline that is the natural choice. In a fan-in topology it is
+a silent footgun.
+
+**The problem.** Suppose you fork from a `router` step and add two parallel
+branches:
+
+```python
+pipeline.add(router)
+pipeline.add(branch_a, inputs={"x": From("router.x")})
+pipeline.add(branch_b)          # no inputs= — looks like it reads from router
+pipeline.add(Join("merged", sources=["branch_a", "branch_b"],
+                  policy="all_present", output=MergedResult,
+                  inputs={"a_out": From("branch_a.result"),
+                          "b_out": From("branch_b.result")}))
+```
+
+`branch_b` has no bindings. In declaration order the step immediately before it
+is `branch_a`, so predecessor-output mode delivers `branch_a`'s output to
+`branch_b` — not `router`'s output. At run time Drawbore validates the payload
+against `branch_b`'s input schema. If `branch_a`'s output shape does not match
+`branch_b`'s input, the run **halts** with `halt_code="schema_violation"` naming
+`branch_b`'s input schema. The symptom points at the wrong place; the root cause
+is the missing binding.
+
+Note: Drawbore catches this at run time via schema validation and halts rather
+than continuing with bad data. There is no registration-time warning when a
+fan-in branch omits bindings — the static check at `Pipeline.add` runs only when
+bindings are explicitly declared.
+
+**The rule.** In any fan-in topology, declare explicit `From(...)` bindings on
+**every** branch. Do not rely on predecessor-output mode for a step that follows
+a parallel branch:
+
+```python
+pipeline.add(router)
+pipeline.add(branch_a, inputs={"x": From("router.x")})
+pipeline.add(branch_b, inputs={"x": From("router.x")})  # explicit — reads from router
+pipeline.add(Join("merged", sources=["branch_a", "branch_b"],
+                  policy="all_present", output=MergedResult,
+                  inputs={"a_out": From("branch_a.result"),
+                          "b_out": From("branch_b.result")}))
+```
+
+`From("agent.field")` binds a single field; `From("agent")` binds the whole
+output object. Both forms are accepted on `inputs=`.
+
 ## What Drawbore guarantees
 
 - **Static check** (when you build the pipeline): every binding's source type

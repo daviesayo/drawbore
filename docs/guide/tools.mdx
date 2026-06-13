@@ -64,3 +64,63 @@ pipeline = Pipeline(name="confirm", registry=registry)
 pipeline.add(retrieve)   # rejected at this line if 'retrieve' declares a tool
                          # that isn't registered
 ```
+
+## Instrumenting and observing tool calls
+
+You do not need to wrap a tool handler to observe it. Every tool call — custom,
+MCP, and builtin — passes through the proxy before it reaches the handler. The
+proxy records timing, input/output hashes, and disposition for every call, and
+emits an `execute_tool` OTel span. That includes tools registered by
+`register_mcp_server` or by the framework itself, not only handlers you wrote.
+
+**Read timing and disposition from `result.metrics.tool_calls`:**
+
+```python
+result = await pipeline.run(input)
+
+for call in result.metrics.tool_calls:
+    print(call.tool, call.operation, call.duration_seconds, call.result)
+    # 'mcp://identity/verify' invoke 0.08 ok
+```
+
+Each `ToolCallMetric` carries `.tool`, `.operation`, `.duration_seconds`, and
+`.result` (one of `"ok"`, `"error"`, or a `"denied:*"` label). For spans and
+the full observability picture — including how to export to Axiom, Datadog, or
+any OTLP backend — see [Observability and audit](/guide/observability-audit).
+
+**Inject a fault in a test:** supply a callable as the mock, and raise from it:
+
+```python
+async def _fail(_args):
+    raise RuntimeError("database unavailable")
+
+async with pipeline.test_mode(
+    mock_tools={"transactions_db.read_transaction": _fail},
+) as test:
+    result = await test.run(...)
+```
+
+The callable mock still flows through the real proxy, JIT token, and circuit
+breaker. For more on test mode see [Local test mode](/guide/local-testing).
+
+**Transform a tool you author:** wrap your handler before registration:
+
+```python
+async def read_transaction(args):
+    return {"id": args["id"], "amount": 100.0, "currency": "USD"}
+
+async def audited_read(args):
+    result = await read_transaction(args)
+    # any additional side effects you own
+    return result
+
+registry.register_tool("transactions_db.read_transaction", audited_read)
+```
+
+**What is not provided:** drawbore does not offer a post-registration hook that
+intercepts or mutates a tool's inputs or substitutes its outputs — for any kind
+of tool (custom, MCP, or builtin). The proxy is the single enforcement
+chokepoint, and the audit `input_hash` is computed before the handler runs, so
+an interceptor that altered inputs or outputs would break audit-record integrity
+and bypass enforcement. If you need per-call transformation for a tool you
+author, wrap the handler before registration as shown above.

@@ -15,7 +15,11 @@ Wrong: invoking a tool the agent didn't list. Right: declare it in
 
 ### Relying on implicit data flow for fan-in
 Wrong: assuming a later step automatically sees an earlier step's output. Right:
-use `From("agent.field")` bindings. See [Pipelines](/docs/guide/pipelines).
+use `From("agent.field")` bindings on every fan-in branch. A branch added with no
+`inputs=` takes its input from the immediately preceding step in declaration order
+— in a fan-in topology that is a sibling branch, not the fork. An omitted binding
+surfaces at run time as a `schema_violation` halt naming the branch's input schema.
+See [Pipelines — Binding inputs in fan-in topologies](/docs/guide/pipelines).
 
 ### Putting provider keys in pipeline JSON
 Wrong: serializing credentials or a gateway into the manifest. Right: keep
@@ -31,3 +35,9 @@ mocked models and tools — the safety layer runs for real. See
 Wrong: returning a half-finished result on failure. Right: let the run halt and
 escalate — Drawbore has no partial-results mode; a halted run's `halt_code` and
 escalation package tell a human exactly what stopped and why.
+
+### Wrapping framework-registered handlers to time or log them
+Wrong: wrapping an MCP or builtin tool handler after registration to capture
+timing or a log entry. Right: the proxy already records every call — read
+`result.metrics.tool_calls` for per-call tool, operation, duration, and
+disposition. See [Tools — Instrumenting and observing tool calls](/guide/tools).
