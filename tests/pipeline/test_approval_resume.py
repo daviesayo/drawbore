@@ -34,7 +34,7 @@ async def test_gate_populates_approval_request_and_records_it():
     req = result.approval_request
     assert req is not None and req.step == "gated"
     assert req.proposed_output == {"y": 2}
-    assert store.approval_request_of("r-1") == req
+    assert store.approval_request_of("r-1") == req.model_dump(mode="json")
 
 
 async def test_approve_resumes_and_completes_with_full_success_block():

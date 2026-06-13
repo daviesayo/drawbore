@@ -12,7 +12,7 @@ interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Mapping
+from typing import Any, Mapping
 
 from pydantic import BaseModel
 
@@ -116,14 +116,24 @@ class CheckpointStore(ABC):
         """
         return TrustLabel.UNTRUSTED
 
-    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
-        """Store the pending human-approval request for ``run_id``. Default: no-op
-        (a store that does not persist approvals simply cannot resume one)."""
+    def record_approval_request(self, run_id: str, request: dict[str, Any]) -> None:
+        """Store the JSON form of the pending approval request for ``run_id``.
+
+        The caller (the pipeline) is responsible for serialising the typed
+        ``ApprovalRequest`` to a dict via ``model_dump(mode="json")`` before
+        passing it here. Default: no-op (a store that does not persist approvals
+        simply cannot resume one).
+        """
         return None
 
-    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
-        """The pending approval request for ``run_id``, or ``None``. Default
-        ``None`` is fail-closed: no stored request means no decision can apply."""
+    def approval_request_of(self, run_id: str) -> dict[str, Any] | None:
+        """The JSON form of the pending approval request for ``run_id``, or
+        ``None``.
+
+        The caller (the pipeline) reconstructs the typed ``ApprovalRequest``
+        via ``ApprovalRequest.model_validate(data)``. Default ``None`` is
+        fail-closed: no stored request means no decision can apply.
+        """
         return None
 
     def clear_approval_request(self, run_id: str) -> None:
@@ -138,7 +148,7 @@ class InMemoryCheckpointStore(CheckpointStore):
         self._fingerprints: dict[str, str] = {}
         self._trust: dict[tuple[str, int], TrustLabel] = {}
         self._seals: dict[tuple[str, int], StepSeal] = {}
-        self._approvals: dict[str, "ApprovalRequest"] = {}
+        self._approvals: dict[str, dict[str, Any]] = {}
 
     def step_started(self, run_id: str, step: int) -> None:
         # No-op for the in-memory store: a process crash wipes it, so there is
@@ -184,10 +194,10 @@ class InMemoryCheckpointStore(CheckpointStore):
     def trust_of(self, run_id: str, step: int) -> TrustLabel:
         return self._trust.get((run_id, step), TrustLabel.UNTRUSTED)
 
-    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
+    def record_approval_request(self, run_id: str, request: dict[str, Any]) -> None:
         self._approvals[run_id] = request
 
-    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
+    def approval_request_of(self, run_id: str) -> dict[str, Any] | None:
         return self._approvals.get(run_id)
 
     def clear_approval_request(self, run_id: str) -> None:

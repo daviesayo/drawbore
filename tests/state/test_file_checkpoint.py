@@ -197,11 +197,12 @@ def _approval_request(run_id: str = "r1") -> ApprovalRequest:
 
 
 def test_approval_request_round_trip(tmp_path):
-    """record then read back returns an equal request; clear then read returns None."""
+    """record then read back returns an equal dict; clear then read returns None."""
     s = FileCheckpointStore(tmp_path)
     req = _approval_request()
-    s.record_approval_request("r1", req)
-    assert s.approval_request_of("r1") == req
+    req_dict = req.model_dump(mode="json")
+    s.record_approval_request("r1", req_dict)
+    assert s.approval_request_of("r1") == req_dict
     s.clear_approval_request("r1")
     assert s.approval_request_of("r1") is None
 
@@ -219,10 +220,11 @@ def test_clear_approval_request_is_idempotent(tmp_path):
 
 
 def test_approval_request_durable_across_new_instance(tmp_path):
-    """A second FileCheckpointStore over the same directory reads the stored request."""
+    """A second FileCheckpointStore over the same directory reads the stored dict."""
     s1 = FileCheckpointStore(tmp_path)
     req = _approval_request()
-    s1.record_approval_request("r1", req)
+    req_dict = req.model_dump(mode="json")
+    s1.record_approval_request("r1", req_dict)
 
     s2 = FileCheckpointStore(tmp_path)
-    assert s2.approval_request_of("r1") == req
+    assert s2.approval_request_of("r1") == req_dict

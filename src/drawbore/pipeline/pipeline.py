@@ -808,7 +808,11 @@ class Pipeline:
             # This prevents a gated side-effecting agent from re-executing on a
             # decision-less poll (double-fire).
             if checkpoints is not None:
-                pending = checkpoints.approval_request_of(run_id)
+                _pending_data = checkpoints.approval_request_of(run_id)
+                pending = (
+                    ApprovalRequest.model_validate(_pending_data)
+                    if _pending_data is not None else None
+                )
                 if pending is not None and pending.step == name:
                     if approval is None:
                         # Decision-less resume: re-surface the pending request
@@ -1008,7 +1012,7 @@ class Pipeline:
                     proposed_output_trust=ledger.scope(run_id, idx).value,
                 )
                 if checkpoints is not None:
-                    checkpoints.record_approval_request(run_id, request)
+                    checkpoints.record_approval_request(run_id, request.model_dump(mode="json"))
                 return self._halt(
                     {**outputs, name: validated_out}, steps_run + 1, escalations,
                     step=name, reason="requires_human_approval",

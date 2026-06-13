@@ -228,22 +228,29 @@ class FileCheckpointStore(CheckpointStore):
 
     _APPROVAL_FILENAME = "approval-request.json"
 
-    def record_approval_request(self, run_id: str, request: "ApprovalRequest") -> None:
-        """Persist ``request`` to ``approval-request.json`` inside the run directory."""
+    def record_approval_request(self, run_id: str, request: dict[str, Any]) -> None:
+        """Persist the JSON dict of the pending approval request to
+        ``approval-request.json`` inside the run directory.
+
+        The caller (the pipeline) serialises the typed request to a dict via
+        ``model_dump(mode="json")`` before passing it here.  This store never
+        imports or reconstructs a typed approval object from persisted data.
+        """
         self._atomic_write(
             self._run_dir(run_id) / self._APPROVAL_FILENAME,
-            request.model_dump(mode="json"),
+            request,
         )
 
-    def approval_request_of(self, run_id: str) -> "ApprovalRequest | None":
-        """Read ``approval-request.json`` fresh from disk; ``None`` if absent."""
+    def approval_request_of(self, run_id: str) -> dict[str, Any] | None:
+        """Read ``approval-request.json`` fresh from disk and return it as a
+        plain dict, or ``None`` if absent.
+
+        The caller (the pipeline) reconstructs the typed request via
+        ``ApprovalRequest.model_validate(data)``.  This store only stores and
+        retrieves JSON — it imports no type from a higher subsystem.
+        """
         path = self._run_dir(run_id) / self._APPROVAL_FILENAME
-        data = self._read_json(path)
-        if data is None:
-            return None
-        import importlib
-        cls = importlib.import_module("drawbore.escalation.approval").ApprovalRequest
-        return cls.model_validate(data)
+        return self._read_json(path)
 
     def clear_approval_request(self, run_id: str) -> None:
         """Remove ``approval-request.json``; idempotent if absent."""
