@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-13
+
 ### Changed
 
 - `verify` now checks that `receipt.footprint_fingerprint` is consistent with
