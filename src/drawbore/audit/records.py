@@ -38,6 +38,11 @@ class StepAuditRecord:
     condition: str | None = None
     node_kind: str = "agent"
     join: str | None = None
+    # Records a typed human approval decision applied to this step's output.
+    human_decision: str | None = None
+    reviewer_id: str | None = None
+    amendment_original_hash: str | None = None
+    amendment_applied_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,13 @@ class AuditRecord:
                 line += f"; join {s.join}"
             if s.status != "ok" and s.reason is not None:
                 line += f"; {s.reason}"
+            if s.human_decision is not None:
+                approval = f"; {s.human_decision}"
+                if s.reviewer_id is not None:
+                    approval += f" by reviewer '{s.reviewer_id}'"
+                if s.amendment_original_hash is not None and s.amendment_applied_hash is not None:
+                    approval += f" (original {s.amendment_original_hash}, applied {s.amendment_applied_hash})"
+                line += approval
             lines.append(line)
         if self.halted_at is not None:
             lines.append(f"Stopped at step: '{self.halted_at}'.")

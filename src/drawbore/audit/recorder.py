@@ -58,6 +58,10 @@ class AuditRecorder:
         duration_seconds: float | None = None,
         tokens: "TokenUsage | None" = None,
         cost: float | None = None,
+        human_decision: str | None = None,
+        reviewer_id: str | None = None,
+        amendment_original_hash: str | None = None,
+        amendment_applied_hash: str | None = None,
     ) -> None:
         """Record one successfully-completed step."""
         self._steps.append(
@@ -67,6 +71,9 @@ class AuditRecorder:
                 tool_calls=tuple(tool_calls), reason=None, evidence=evidence,
                 model_turns=model_turns, reprompts=reprompts, model=model,
                 condition=condition, node_kind=node_kind, join=join,
+                human_decision=human_decision, reviewer_id=reviewer_id,
+                amendment_original_hash=amendment_original_hash,
+                amendment_applied_hash=amendment_applied_hash,
             )
         )
         self._step_metrics.append(

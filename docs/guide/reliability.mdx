@@ -45,6 +45,14 @@ vocabulary the audit trail uses (`schema_violation`, `tool_access`,
 `circuit_breaker`, `condition_tainted`, ...). Branch on `halt_code`, never on the
 prose in `reason`; the prose is for humans and may be reworded.
 
+An `approval_rejected` halt means a human reviewer rejected the step's proposed
+output; it is terminal for that request. Re-running the pipeline mints a fresh
+approval request.
+
+An `approval_error` halt means an approval decision could not be applied: no
+pending request matched, the request id was stale or mismatched, the decision
+was replayed (already consumed), or the run never consumed the decision.
+
 A `resume_drift` halt means a checkpointed run was resumed after the
 pipeline's topology or an agent's declared contract changed; see
 [Durable resume](/guide/durable-resume) for the refusal semantics and the

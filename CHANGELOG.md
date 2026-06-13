@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Typed human approval. A `requires_human_approval` step gate now mints an
+  `ApprovalRequest` and the run resumes with
+  `pipeline.run(..., approval=ApprovalDecision(...))` — approve, amend, or
+  reject. Amendments pass the same output-schema gate as model output, the
+  reviewer and decision land on the step audit trail
+  (`human_decision`/`reviewer_id` and, for amendments, the original/applied
+  output hashes), and the new `ApprovalRequest`/`ApprovalDecision` artifacts are
+  exported from `drawbore.escalation`. New halt codes `approval_rejected` and
+  `approval_error`.
+
 ### Documentation
 
 - Document fan-in input binding in the pipelines guide: explains predecessor-output

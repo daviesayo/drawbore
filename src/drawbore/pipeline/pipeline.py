@@ -7,6 +7,7 @@ gate at every edge, and halt-on-violation. The engine runs only individual steps
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping
 
@@ -23,8 +24,8 @@ from drawbore.evidence import (
 )
 from drawbore.observability import payload_hash
 from drawbore.errors import SanitizationError
-from drawbore.schema import check_compatibility
-from drawbore.schema.errors import SchemaCompatibilityError
+from drawbore.schema import check_compatibility, validate
+from drawbore.schema.errors import SchemaCompatibilityError, SchemaValidationError
 from drawbore.state import CheckpointStore, ResumeLedger, ResumeLedgerBuilder, RunState
 from drawbore.state.step_seal import diff_seals, field_label, seal_for
 from drawbore.orchestration import LocalEngine, OrchestratorEngine
@@ -37,6 +38,8 @@ from drawbore.tools import (
 )
 from drawbore.tools.taint import TaintLedger, TrustLabel, join
 from drawbore.escalation import (
+    ApprovalDecision,
+    ApprovalRequest,
     EscalationDispatcher,
     EscalationPackage,
     EscalationPolicy,
@@ -74,6 +77,7 @@ class RunResult:
     halt_code: str | None = None
     resume_ledger: "ResumeLedger | None" = None
     metrics: "RunMetrics | None" = None
+    approval_request: "ApprovalRequest | None" = None
 
 
 class Pipeline:
@@ -319,6 +323,7 @@ class Pipeline:
         attempted_output: Any | None,
         agent_id: str | None = None,
         code: str,
+        approval_request: "ApprovalRequest | None" = None,
     ) -> "RunResult":
         """Terminate the run. With no escalation policy this is a plain halt.
         With a policy, build + dispatch the escalation package and report status
@@ -327,7 +332,7 @@ class Pipeline:
             return RunResult(
                 "halted", outputs, steps_run,
                 halted_at=step, reason=reason, escalations=escalations,
-                halt_code=code,
+                halt_code=code, approval_request=approval_request,
             )
         package = build_escalation(
             step=step or "(input)", reason=reason, received=received,
@@ -338,7 +343,7 @@ class Pipeline:
         return RunResult(
             "escalated", outputs, steps_run,
             halted_at=step, reason=reason, escalations=escalations + [package],
-            halt_code=code,
+            halt_code=code, approval_request=approval_request,
         )
 
     def _dispatch_review(
@@ -392,6 +397,7 @@ class Pipeline:
         evidence_store: EvidenceStore | None = None,
         registry_override: Any | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
+        approval: "ApprovalDecision | None" = None,
     ) -> RunResult:
         """Execute the pipeline and produce an audit record.
 
@@ -410,6 +416,11 @@ class Pipeline:
                 "resume is keyed by the run identity, and a guessed default "
                 "could silently resume a previous run's outputs. Pass run_id='...'."
             )
+        if approval is not None and (checkpoints is None or run_id is None):
+            raise ValueError(
+                "Pipeline.run() with approval= requires checkpoints= and run_id=: "
+                "a decision can only apply to a stored request from a resumable run."
+            )
         resolved_run_id = run_id or f"{self.name}-run"
         recorder = AuditRecorder(
             run_id=resolved_run_id, pipeline=self.name,
@@ -426,6 +437,7 @@ class Pipeline:
                 evidence_store=evidence_store,
                 registry_override=registry_override,
                 initial_trust=initial_trust,
+                approval=approval,
             )
             return result
         finally:
@@ -460,6 +472,7 @@ class Pipeline:
         evidence_store: EvidenceStore | None = None,
         registry_override: Any | None = None,
         initial_trust: TrustLabel = TrustLabel.TRUSTED,
+        approval: "ApprovalDecision | None" = None,
     ) -> RunResult:
         """Execute the pipeline (halt-and-escalate default).
 
@@ -610,6 +623,7 @@ class Pipeline:
         skipped: set[str] = set()
         escalations: list[EscalationPackage] = []
         steps_run = 0
+        approval_consumed = False
 
         # The run's initial input is external — sanitize it before anything runs.
         try:
@@ -779,6 +793,89 @@ class Pipeline:
                 seed = initial_trust
             ledger.seed(run_id, idx, seed)
 
+            # Pre-execution handler: if this step has a pending approval request,
+            # handle it before executing the agent (either re-surface the request
+            # on a decision-less poll, or apply the decision on a decided resume).
+            # This prevents a gated side-effecting agent from re-executing on a
+            # decision-less poll (double-fire).
+            if checkpoints is not None:
+                pending = checkpoints.approval_request_of(run_id)
+                if pending is not None and pending.step == name:
+                    if approval is None:
+                        # Decision-less resume: re-surface the pending request
+                        # WITHOUT re-executing the gated agent (no double-fire).
+                        return self._halt(
+                            outputs, steps_run, escalations, step=name,
+                            reason="requires_human_approval",
+                            received=None, attempted_output=pending.proposed_output,
+                            code="requires_human_approval", approval_request=pending,
+                        )
+                    # Decision supplied — apply it (existing id-check / reject /
+                    # amend-or-approve / schema-gate / record / full-success-block).
+                    if approval.request_id != pending.request_id:
+                        return self._halt(
+                            outputs, steps_run, escalations, step=name,
+                            reason=(
+                                "approval_error: decision is bound to request "
+                                f"'{approval.request_id}' but the pending request "
+                                f"is '{pending.request_id}'"
+                            ),
+                            received=None, attempted_output=None,
+                            code="approval_error",
+                        )
+                    if approval.verdict == "rejected":
+                        checkpoints.clear_approval_request(run_id)
+                        approval_consumed = True
+                        return self._halt(
+                            outputs, steps_run, escalations, step=name,
+                            reason=(
+                                "approval_rejected: reviewer "
+                                f"'{approval.reviewer_id}' rejected the proposed output"
+                                + (f" — {approval.rationale}" if approval.rationale else "")
+                            ),
+                            received=None, attempted_output=pending.proposed_output,
+                            code="approval_rejected",
+                        )
+                    chosen = (
+                        approval.amended_output if approval.verdict == "amended"
+                        else pending.proposed_output
+                    )
+                    try:
+                        validated_out = validate(step.agent.spec.output, chosen)
+                    except SchemaValidationError as exc:
+                        checkpoints.clear_approval_request(run_id)
+                        approval_consumed = True
+                        return self._halt(
+                            outputs, steps_run, escalations, step=name,
+                            reason=f"schema_violation: {exc}",
+                            received=None, attempted_output=chosen,
+                            code="schema_violation",
+                        )
+                    checkpoints.clear_approval_request(run_id)
+                    approval_consumed = True
+                    original_hash = payload_hash(pending.proposed_output)
+                    applied_hash = payload_hash(validated_out.model_dump())
+                    recorder.record_step(
+                        index=idx, agent=name, version=step.agent.spec.version,
+                        agent_id=agent_id, input_hash=None, output_hash=applied_hash,
+                        tool_calls=(),
+                        human_decision=approval.verdict, reviewer_id=approval.reviewer_id,
+                        amendment_original_hash=(
+                            original_hash if approval.verdict == "amended" else None
+                        ),
+                        amendment_applied_hash=(
+                            applied_hash if approval.verdict == "amended" else None
+                        ),
+                    )
+                    outputs[name] = validated_out
+                    output_trust[name] = join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx))
+                    checkpoints.step_succeeded(run_id, idx, validated_out)
+                    checkpoints.record_trust(run_id, idx, output_trust[name])
+                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                    ledger_builder.executed(idx, name, sealed=True)
+                    steps_run += 1
+                    continue
+
             payload = build_input(
                 step.inputs, outputs, initial=initial,
                 predecessor=self._node_name(self.steps[idx - 1]) if idx > 0 else None,
@@ -857,12 +954,31 @@ class Pipeline:
                         )
 
             # Explicit human-approval gate — always a synchronous gate.
+            # The pre-execution handler above owns all reuse logic; this block
+            # always mints a fresh request (a second mint on a store-less run
+            # is info-only — no decision can arrive without a store).
             if step.agent.spec.requires_human_approval:
+                request = ApprovalRequest(
+                    request_id=uuid.uuid4().hex, run_id=run_id, step=name,
+                    question=f"Approve the proposed output of step '{name}'?",
+                    reason="requires_human_approval",
+                    package_legible=build_escalation(
+                        step=name, reason="requires_human_approval",
+                        received=outcome.validated_input,
+                        attempted_output=validated_out,
+                        trace=tuple(outputs.keys()), agent_id=agent_id,
+                    ).legible(),
+                    proposed_output=validated_out.model_dump(mode="json"),
+                    proposed_output_trust=ledger.scope(run_id, idx).value,
+                )
+                if checkpoints is not None:
+                    checkpoints.record_approval_request(run_id, request)
                 return self._halt(
                     {**outputs, name: validated_out}, steps_run + 1, escalations,
                     step=name, reason="requires_human_approval",
                     received=outcome.validated_input, attempted_output=validated_out,
                     code="requires_human_approval",
+                    approval_request=request,
                 )
 
             recorder.record_step(
@@ -887,6 +1003,15 @@ class Pipeline:
                 ledger_builder.executed(idx, name, sealed=False)
             steps_run += 1
 
+        if approval is not None and not approval_consumed:
+            return self._halt(
+                outputs, steps_run, escalations, step="",
+                reason=(
+                    "approval_error: an approval decision was supplied but no "
+                    "pending request consumed it"
+                ),
+                received=None, attempted_output=None, code="approval_error",
+            )
         return RunResult("completed", outputs, steps_run, escalations=escalations)
 
     def test_mode(

@@ -27,6 +27,7 @@
           "docs/guide/json-config",
           "docs/guide/evidence-compression",
           "docs/guide/escalation",
+          "docs/guide/human-approval",
           "docs/guide/observability-audit",
           "docs/guide/identity-versioning",
           "docs/guide/reliability",
