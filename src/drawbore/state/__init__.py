@@ -1,6 +1,16 @@
 """Message-passing state model + run-scoped checkpointing."""
 
 from .checkpoint import CheckpointStore, InMemoryCheckpointStore
+from .effect_ledger import (
+    EffectEntry,
+    EffectLedger,
+    EffectLedgerWriteError,
+    EffectDivergenceError,
+    EffectStatus,
+    EffectUnresolvedError,
+    InMemoryEffectLedger,
+    ledger_args_hash,
+)
 from .file_checkpoint import FileCheckpointStore
 from .resume_ledger import ResumeLedger, ResumeLedgerBuilder, ResumeLedgerEntry
 from .run_state import RunState
@@ -17,4 +27,12 @@ __all__ = [
     "ResumeLedger",
     "ResumeLedgerBuilder",
     "ResumeLedgerEntry",
+    "EffectLedger",
+    "InMemoryEffectLedger",
+    "EffectEntry",
+    "EffectStatus",
+    "ledger_args_hash",
+    "EffectDivergenceError",
+    "EffectUnresolvedError",
+    "EffectLedgerWriteError",
 ]
