@@ -31,7 +31,6 @@ from drawbore.state import (
     EffectLedger,
     ResumeLedger,
     ResumeLedgerBuilder,
-    RunState,
 )
 from drawbore.state.step_seal import diff_seals, field_label, seal_for
 from drawbore.orchestration import LocalEngine, OrchestratorEngine

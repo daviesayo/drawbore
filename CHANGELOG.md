@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Tool` now validates `kind` against `{"custom", "builtin", "mcp"}` at
   construction, failing closed on an unknown kind.
 
+### Removed
+
+- `drawbore.state.RunState` has been removed. It carried no live reads or writes
+  (run-scoped context is carried internally by the orchestrator), so the type was
+  inert. Code that imported it can drop the import.
+
 ### Fixed
 
 - The confinement receipt is now minted on every run without exception: if
