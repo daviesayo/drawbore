@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one atomic operation. The default delegates to the existing setters; durable
   stores such as `FileCheckpointStore` override it to a single write, closing the
   crash window the store's atomicity contract already promised.
+- `ToolRegistry.tools()` returns a read-only view of the registered tools, and
+  `ToolRegistry.clone()` returns an independent copy, so callers no longer reach
+  into private state.
+
+### Changed
+
+- `Tool` now validates `kind` against `{"custom", "builtin", "mcp"}` at
+  construction, failing closed on an unknown kind.
 
 ### Documentation
 

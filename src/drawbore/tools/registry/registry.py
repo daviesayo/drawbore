@@ -7,8 +7,10 @@ and an optional Pydantic schema for their arguments. ``kind`` records provenance
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, ClassVar
+from types import MappingProxyType
 
 from ..errors import ToolAccessError
 from ..taint import TrustLabel
@@ -35,7 +37,14 @@ class Tool:
                                                     # retrieval); True for any tool that may produce
                                                     # a durable side-effect
 
+    _VALID_KINDS: ClassVar[frozenset[str]] = frozenset({"custom", "builtin", "mcp"})
+
     def __post_init__(self) -> None:
+        # Validate kind before anything else — fail closed on unknown provenance.
+        if self.kind not in self._VALID_KINDS:
+            raise ValueError(
+                f"Tool kind must be one of {sorted(self._VALID_KINDS)!r}; got {self.kind!r}"
+            )
         # Coerce so the proxy's identity checks can't be bypassed by a raw string
         # (a string that isn't a valid TrustLabel raises ValueError here, fail closed).
         if not isinstance(self.source_trust, TrustLabel):
@@ -137,6 +146,21 @@ class ToolRegistry:
         )
         self._tools[name] = tool
         return tool
+
+    def tools(self) -> Mapping[str, Tool]:
+        """Return a read-only view of all registered tools."""
+        return MappingProxyType(self._tools)
+
+    def clone(self) -> "ToolRegistry":
+        """Return a new ToolRegistry whose tool set is a shallow copy of this one.
+
+        Frozen ``Tool`` objects are safe to share. Registration side-effects
+        (e.g. callbacks) are NOT re-run; the copy simply inherits the same
+        ``Tool`` instances.
+        """
+        new = ToolRegistry()
+        new._tools = dict(self._tools)
+        return new
 
     def get(self, name: str) -> Tool:
         if name not in self._tools:
