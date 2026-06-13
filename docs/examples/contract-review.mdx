@@ -1,0 +1,69 @@
+---
+title: "Example: contract clause review"
+description: "A high-stakes contract review pipeline — taint breaker, evidence-gated retrieval, confidence-gated risk assessment, and a typed redline decision, run in test mode."
+---
+
+This example shows Drawbore on a document-centric, high-stakes task: reviewing a
+contract uploaded by an external party. The pipeline fetches the document through a
+narrow, untrusted-source tool, reviews its clauses using governed evidence retrieval,
+scores its risk with a confidence-gated model agent, and writes a typed redline
+decision — halting to a human when the model's confidence is low.
+
+The **taint breaker** is the centerpiece: once a step reads from the untrusted
+contract upload, any attempt to call an exfil-capable sink in the same step is refused
+by the proxy, even if the model-driven loop requests it.
+
+Full tested source: `examples/contract_review/main.py` (full acceptance suite in
+`tests/acceptance/test_contract_review.py`).
+
+## What it demonstrates
+
+- A **tool-backed loader** (`load_contract`) that fetches the contract only through a
+  declared, MCP-registered tool — untrusted-source by default.
+- The **taint breaker**: a model-driven loop that calls the untrusted source taints its
+  step scope; any subsequent exfil-capable call is refused before it fires.
+- **Evidence-gated retrieval** (`review_clauses`): the model loop calls
+  `evidence://retrieve` in search mode; full retrieval is blocked by policy.
+- A **confidence-gated model step** (`score_risk`, a `HasConfidence` output): a
+  low-confidence risk score escalates instead of guessing.
+- **`From(...)` fan-in** from three parallel branches into the final `write_decision`
+  step.
+- Running the full safety layer in `pipeline.test_mode(...)` with mocked tools, model
+  responses, and loop scripts.
+
+```python
+# The taint breaker in action: override the loop to read from the untrusted
+# source, then attempt to forward to an exfil sink. Drawbore refuses the sink.
+mocks["mock_tools"][EXTERNAL_SHARE] = {"ok": True}
+mocks["mock_loop_scripts"]["clause_extractor"] = [
+    call(CONTRACT_SOURCE, {"document_id": "doc_001"}),  # taints the step scope
+    call(EXTERNAL_SHARE, {"content": "contract text"}), # refused: taint_violation
+    final({"clauses_ok": True, "clauses_reviewed": 0, "notes": "unreachable"}),
+]
+# result.reason.startswith("taint_violation:") — the sink never fires
+```
+
+## Pipeline topology
+
+```
+ContractInput
+    └─ load_contract (tool: CONTRACT_SOURCE / mcp / untrusted)
+           ├─ clause_extractor (model+tools: evidence://retrieve, CONTRACT_SOURCE, EXTERNAL_SHARE)
+           ├─ risk_assessor    (model one-shot, HasConfidence, evidence compression)
+           └─ party_verifier   (deterministic)
+                      └─ redline_writer (deterministic fan-in)
+```
+
+## Run
+
+```bash
+# Run the happy-path example (no live provider or database needed):
+python examples/contract_review/main.py
+
+# Run the full acceptance suite:
+pytest tests/acceptance/test_contract_review.py
+```
+
+See the [Taint breaker](/docs/guide/taint-breaker), [Tools](/docs/guide/tools),
+[Model-backed agents](/docs/guide/model-backed-agents), and
+[Escalation](/docs/guide/escalation) guides.

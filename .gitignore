@@ -18,3 +18,6 @@ CLAUDE.local.md
 __pycache__/
 .vscode/
 DECISIONS.md
+
+# Advisor handoff plans (symlink into the private overlay; reference private strategy)
+plans
