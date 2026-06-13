@@ -12,6 +12,10 @@ from drawbore.state.step_seal import (
     diff_seals,
     seal_for,
 )
+from drawbore.tools.registry.registry import ToolRegistry
+
+
+_EMPTY_REGISTRY = ToolRegistry()
 
 
 class _In(BaseModel):
@@ -49,27 +53,27 @@ def _spec(**overrides) -> AgentSpec:
 
 
 def test_seal_is_deterministic():
-    assert seal_for(_spec(), None) == seal_for(_spec(), None)
+    assert seal_for(_spec(), None, _EMPTY_REGISTRY) == seal_for(_spec(), None, _EMPTY_REGISTRY)
 
 
 def test_seal_is_frozen_and_closed():
-    seal = seal_for(_spec(), None)
+    seal = seal_for(_spec(), None, _EMPTY_REGISTRY)
     with pytest.raises(pydantic.ValidationError):
         seal.model = "other"
 
 
 def test_diff_empty_for_identical():
-    assert diff_seals(seal_for(_spec(), None), seal_for(_spec(), None)) == ()
+    assert diff_seals(seal_for(_spec(), None, _EMPTY_REGISTRY), seal_for(_spec(), None, _EMPTY_REGISTRY)) == ()
 
 
 def test_model_drift_detected():
-    a = seal_for(_spec(), None)
-    b = seal_for(_spec(model="openai/gpt-4o"), None)
+    a = seal_for(_spec(), None, _EMPTY_REGISTRY)
+    b = seal_for(_spec(model="openai/gpt-4o"), None, _EMPTY_REGISTRY)
     assert diff_seals(a, b) == ("model",)
 
 
 def test_every_sealed_field_drifts_individually():
-    base = seal_for(_spec(), None)
+    base = seal_for(_spec(), None, _EMPTY_REGISTRY)
     cases = {
         "version": _spec(version="2.0.0"),
         "risk_tier": _spec(risk_tier="high"),
@@ -83,7 +87,7 @@ def test_every_sealed_field_drifts_individually():
         "context_access": _spec(context_access="full"),
     }
     for field, mutated_spec in cases.items():
-        drifted = diff_seals(base, seal_for(mutated_spec, None))
+        drifted = diff_seals(base, seal_for(mutated_spec, None, _EMPTY_REGISTRY))
         assert drifted == (field,), f"{field}: got {drifted}"
 
 
@@ -92,38 +96,38 @@ def test_input_schema_drift_detected():
         text: str
         lang: str
 
-    a = seal_for(_spec(), None)
-    b = seal_for(_spec(input=_In2), None)
+    a = seal_for(_spec(), None, _EMPTY_REGISTRY)
+    b = seal_for(_spec(input=_In2), None, _EMPTY_REGISTRY)
     assert diff_seals(a, b) == ("input_schema_fingerprint",)
 
 
 def test_evidence_policy_drift_detected():
-    a = seal_for(_spec(), EvidencePolicy(enabled=True))
-    b = seal_for(_spec(), EvidencePolicy(enabled=True, min_tokens=100))
+    a = seal_for(_spec(), EvidencePolicy(enabled=True), _EMPTY_REGISTRY)
+    b = seal_for(_spec(), EvidencePolicy(enabled=True, min_tokens=100), _EMPTY_REGISTRY)
     assert diff_seals(a, b) == ("evidence_policy_fingerprint",)
 
 
 def test_no_policy_is_sentinel_and_differs_from_default_policy():
-    none_seal = seal_for(_spec(), None)
-    policy_seal = seal_for(_spec(), EvidencePolicy())
+    none_seal = seal_for(_spec(), None, _EMPTY_REGISTRY)
+    policy_seal = seal_for(_spec(), EvidencePolicy(), _EMPTY_REGISTRY)
     assert none_seal.evidence_policy_fingerprint == "none"
     assert diff_seals(none_seal, policy_seal) == ("evidence_policy_fingerprint",)
 
 
 def test_none_instructions_distinct_from_empty():
-    a = seal_for(_spec(instructions=None), None)
-    b = seal_for(_spec(instructions=""), None)
+    a = seal_for(_spec(instructions=None), None, _EMPTY_REGISTRY)
+    b = seal_for(_spec(instructions=""), None, _EMPTY_REGISTRY)
     assert a.instructions_fingerprint == "none"
     assert diff_seals(a, b) == ("instructions_fingerprint",)
 
 
 def test_context_access_stored_verbatim():
-    assert seal_for(_spec(), None).context_access == "none"
+    assert seal_for(_spec(), None, _EMPTY_REGISTRY).context_access == "none"
 
 
 def test_multi_field_drift_sorted():
-    a = seal_for(_spec(), None)
-    b = seal_for(_spec(model="x", version="9.9.9"), None)
+    a = seal_for(_spec(), None, _EMPTY_REGISTRY)
+    b = seal_for(_spec(model="x", version="9.9.9"), None, _EMPTY_REGISTRY)
     assert diff_seals(a, b) == ("model", "version")
 
 

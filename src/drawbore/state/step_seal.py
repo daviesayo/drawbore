@@ -16,6 +16,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from drawbore._canon import canonical_fingerprint, text_fingerprint
+from drawbore.tools.errors import ToolAccessError
 
 #: Human-facing labels for sealed fields whose model name is an internal
 #: fingerprint column. Halt reasons and ledger prose use these; the
@@ -48,6 +49,7 @@ class StepSeal(BaseModel):
     requires_human_approval: bool
     context_access: str
     tools: tuple[str, ...]
+    effectful_tools: tuple[str, ...] = ()
     model: str | None
     fallback_model: str | None
     instructions_fingerprint: str
@@ -56,12 +58,32 @@ class StepSeal(BaseModel):
     evidence_policy_fingerprint: str
 
 
-def seal_for(spec: "AgentSpec", evidence_policy: "EvidencePolicy | None") -> StepSeal:
-    """Build the seal for a step from its agent contract and evidence policy."""
+def _tool_is_effectful(registry: "ToolRegistry", ref: str) -> bool:
+    """Return the tool's effectful flag, fail-closed True if the ref is absent."""
+    try:
+        return registry.get(ref).effectful
+    except ToolAccessError:
+        return True
+
+
+def seal_for(
+    spec: "AgentSpec",
+    evidence_policy: "EvidencePolicy | None",
+    registry: "ToolRegistry",
+) -> StepSeal:
+    """Build the seal for a step from its agent contract, evidence policy, and registry.
+
+    The registry is used to record which declared tools are effectful so that
+    a classification flip (effectful=True -> False) is caught as drift on resume.
+    An unregistered tool ref is treated as effectful (fail-closed).
+    """
     if evidence_policy is None:
         evidence_fp = "none"
     else:
         evidence_fp = canonical_fingerprint(evidence_policy.model_dump(mode="json"))
+    effectful_tools = tuple(
+        sorted(ref for ref in spec.tools if _tool_is_effectful(registry, ref))
+    )
     return StepSeal(
         agent=spec.name,
         version=spec.version,
@@ -69,6 +91,7 @@ def seal_for(spec: "AgentSpec", evidence_policy: "EvidencePolicy | None") -> Ste
         requires_human_approval=spec.requires_human_approval,
         context_access=spec.context_access,
         tools=tuple(spec.tools),
+        effectful_tools=effectful_tools,
         model=spec.model,
         fallback_model=spec.fallback_model,
         instructions_fingerprint=text_fingerprint(spec.instructions),

@@ -584,7 +584,7 @@ class Pipeline:
                         continue
                     if not checkpoints.is_completed(run_id, i):
                         continue
-                    current = seal_for(node_.agent.spec, node_.evidence)
+                    current = seal_for(node_.agent.spec, node_.evidence, registry)
                     stored = checkpoints.seal_of(run_id, i)
                     if stored is None:
                         ledger_builder.refused(i, node_.agent.name, drifted_fields=())
@@ -871,7 +871,7 @@ class Pipeline:
                     output_trust[name] = join(TrustLabel(pending.proposed_output_trust), ledger.scope(run_id, idx))
                     checkpoints.step_succeeded(run_id, idx, validated_out)
                     checkpoints.record_trust(run_id, idx, output_trust[name])
-                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                    checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
                     ledger_builder.executed(idx, name, sealed=True)
                     steps_run += 1
                     continue
@@ -997,7 +997,7 @@ class Pipeline:
             if checkpoints is not None:
                 checkpoints.step_succeeded(run_id, idx, validated_out)
                 checkpoints.record_trust(run_id, idx, output_trust[name])
-                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence))
+                checkpoints.record_seal(run_id, idx, seal_for(step.agent.spec, step.evidence, registry))
                 ledger_builder.executed(idx, name, sealed=True)
             else:
                 ledger_builder.executed(idx, name, sealed=False)
