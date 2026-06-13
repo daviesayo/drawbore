@@ -96,6 +96,9 @@ class ToolProxy:
         # Hash the input once and reuse it for both the span tag and the log entry
         # (one identity scheme; avoids divergence between span and log).
         input_hash = payload_hash(args)
+        # Initialise to None so the except ToolError handler can detect an
+        # unresolved-tool denial (registry.get itself raised ToolAccessError).
+        tool = None
         with genai_span(semconv.OP_EXECUTE_TOOL, tool_ref, {
             semconv.GEN_AI_TOOL_NAME: tool_ref,
             semconv.DRAWBORE_RUN_ID: run_id,
@@ -203,6 +206,10 @@ class ToolProxy:
                         self._log(
                             tool_ref, run_id, operation, input_hash,
                             output_hash, start, "replay",
+                            step=step,
+                            scope=self._ledger.scope(run_id, step).value,
+                            kind=tool.kind,
+                            exfil_capable=tool.exfil_capable,
                         )
                         return entry.output
                     elif entry.status == EffectStatus.SUCCEEDED:
@@ -218,17 +225,35 @@ class ToolProxy:
                         )
             except ToolError as exc:
                 span.set_attribute(semconv.DRAWBORE_STATUS, _denial_label(exc))
-                self._log(tool_ref, run_id, operation, input_hash, None, start, _denial_label(exc))
+                self._log(
+                    tool_ref, run_id, operation, input_hash, None, start, _denial_label(exc),
+                    step=step,
+                    scope=self._ledger.scope(run_id, step).value,
+                    kind=tool.kind if tool is not None else None,
+                    exfil_capable=tool.exfil_capable if tool is not None else False,
+                )
                 raise
             except Exception:
                 span.set_attribute(semconv.DRAWBORE_STATUS, "error")
-                self._log(tool_ref, run_id, operation, input_hash, None, start, "error")
+                self._log(
+                    tool_ref, run_id, operation, input_hash, None, start, "error",
+                    step=step,
+                    scope=self._ledger.scope(run_id, step).value,
+                    kind=tool.kind if tool is not None else None,
+                    exfil_capable=tool.exfil_capable if tool is not None else False,
+                )
                 raise
             output_hash = payload_hash(result)
             span.set_attribute(semconv.DRAWBORE_OUTPUT_HASH, output_hash)
             span.set_attribute(semconv.DRAWBORE_STATUS, "ok")
             span.set_status(Status(StatusCode.OK))
-            self._log(tool_ref, run_id, operation, input_hash, output_hash, start, "ok")
+            self._log(
+                tool_ref, run_id, operation, input_hash, output_hash, start, "ok",
+                step=step,
+                scope=self._ledger.scope(run_id, step).value,
+                kind=tool.kind,
+                exfil_capable=tool.exfil_capable,
+            )
             return result
 
     def _log(
@@ -240,6 +265,11 @@ class ToolProxy:
         output_hash: str | None,
         start: float,
         label: str,
+        *,
+        step: int | None,
+        scope: str,
+        kind: str | None,
+        exfil_capable: bool,
     ) -> None:
         # input_hash is computed once by invoke and passed in — no re-hash here.
         self.log.append(
@@ -251,5 +281,9 @@ class ToolProxy:
                 "output_hash": output_hash,
                 "duration": self._clock() - start,
                 "result": label,
+                "step": step,
+                "scope": scope,
+                "kind": kind,
+                "exfil_capable": exfil_capable,
             }
         )
