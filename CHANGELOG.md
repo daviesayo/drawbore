@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ToolRegistry.tools()` returns a read-only view of the registered tools, and
   `ToolRegistry.clone()` returns an independent copy, so callers no longer reach
   into private state.
+- `mcp_server(registry, ...)` async context manager in `drawbore.mcp`: registers
+  an MCP server's declared tools and closes the live session when the block exits
+  (even on exception). Use it in long-lived processes or per-request scopes to
+  scope connections and avoid session leaks. Takes the same parameters as
+  `register_mcp_server` and yields the same tuple of `mcp://<name>/<tool>` refs.
 
 ### Changed
 
@@ -31,12 +36,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `drawbore.llm.resolve_model_chain` and the compatibility `run_agentic_loop`
+  entrypoint have been removed. Model resolution now goes through the runtime
+  (`resolve_chain` in `drawbore.llm`), which expands `profile:` references and
+  fails closed with a legible configuration error when a profile is not found.
+  The removed `resolve_model_chain` returned `profile:` references unexpanded;
+  the pipeline engine never used it, so this only affected code that imported the
+  public export directly.
 - `drawbore.state.RunState` has been removed. It carried no live reads or writes
   (run-scoped context is carried internally by the orchestrator), so the type was
   inert. Code that imported it can drop the import.
 
+### Security
+
+- The `max_bytes` input-size gate in `sanitize()` now measures serialized JSON
+  byte length (`json.dumps(...).encode("utf-8")` with `ensure_ascii=True`),
+  matching the actual byte length the model prompt serializer produces.  The
+  previous `repr()`-based measurement undercounted multibyte text (CJK, Arabic,
+  Devanagari, etc.) by roughly 2x, so the 1 MiB default could admit up to ~2 MiB
+  of multibyte input.  The bound is now accurate.
+- A `ToolProxy` constructed without an explicit `ledger=` argument now fails
+  closed (UNTRUSTED scope) on the taint exfil gate for unseeded steps, instead
+  of failing open (TRUSTED). Pass `ledger=TaintLedger(managed=False)` explicitly
+  to opt into the permissive standalone contract.
+
 ### Fixed
 
+- MCP session leak: long-lived processes that reuse an MCP server across requests
+  now have a safe scoping path via `mcp_server(...)`. `register_mcp_server` is
+  unchanged — it does not close the session on success, so it remains correct for
+  process-lifetime registrations where the caller owns teardown.
 - The confinement receipt is now minted on every run without exception: if
   receipt construction itself fails (for example on a malformed tool-call log
   entry), `mint_receipt` returns a deterministic `unverifiable` receipt naming the

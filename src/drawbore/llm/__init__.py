@@ -2,7 +2,6 @@
 
 from .attempts import ModelAttemptAudit, ModelAudit
 from .build import build_model_request
-from .chain import resolve_model_chain
 from .classify import ProviderOutcome, classify_provider_exception
 from .config import (
     FallbackReason,
@@ -24,7 +23,6 @@ from .usage import TokenUsage, extract_cost, extract_usage
 __all__ = [
     "ModelRequest",
     "ModelResponse",
-    "resolve_model_chain",
     "build_model_request",
     "LLMGateway",
     "LiteLLMGateway",

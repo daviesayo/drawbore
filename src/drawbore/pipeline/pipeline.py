@@ -946,7 +946,7 @@ class Pipeline:
 
         # The run's initial input is external — sanitize it before anything runs.
         try:
-            sanitize(initial.model_dump())
+            sanitize(initial.model_dump(mode="json"))
         except SanitizationError as exc:
             return self._halt(
                 outputs, 0, escalations,

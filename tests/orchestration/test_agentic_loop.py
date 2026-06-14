@@ -3,8 +3,9 @@ import pytest
 from pydantic import BaseModel
 
 from drawbore.agent import agent
-from drawbore.orchestration.adk_loop import run_agentic_loop
+from drawbore.orchestration.adk_loop import run_agentic_loop_chain
 from drawbore.orchestration.engine import ToolLoopBundle
+from drawbore.llm.resolution import ModelAttempt, ResolvedModelChain
 from drawbore.tools import ToolRegistry, ToolProxy, TokenIssuer, RunContext
 
 
@@ -14,6 +15,22 @@ class In(BaseModel):
 
 class Out(BaseModel):
     answer: str
+
+
+def _direct_chain(model: str) -> ResolvedModelChain:
+    """Build a minimal single-attempt ResolvedModelChain for a direct model string
+    (no profile expansion needed in unit tests)."""
+    attempt = ModelAttempt(
+        provider=None,
+        model=model,
+        request_model=model,
+        declared_ref=model,
+        source="direct",
+        fallback_on=("timeout", "rate_limit", "server_error", "provider_unavailable"),
+        credential_env=None,
+        credential_required=False,
+    )
+    return ResolvedModelChain(declared=(model,), attempts=(attempt,))
 
 
 def _wiring():
@@ -39,12 +56,13 @@ async def test_loop_calls_a_tool_then_returns_final_json(captured_spans, fake_ad
 
     script = [("call", "lookup", {"key": "x"}), ("final", json.dumps({"answer": "done:42"}))]
     reg, proxy, bundle = _wiring()
-    output, model_turns = await run_agentic_loop(
+    result = await run_agentic_loop_chain(
         solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        chain=_direct_chain("fake"),
         model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
     )
-    assert output == {"answer": "done:42"}
-    assert model_turns == 2
+    assert result.output == {"answer": "done:42"}
+    assert result.model_turns == 2
     # the tool call went through the proxy (logged ok)
     assert any(e["tool"] == "lookup" and e["result"] == "ok" for e in proxy.log)
     # model turns traced as chat spans
@@ -59,12 +77,13 @@ async def test_loop_handles_two_sequential_tool_calls(fake_adk_model):
     script = [("call", "lookup", {"key": "a"}), ("call", "lookup", {"key": "b"}),
               ("final", json.dumps({"answer": "two"}))]
     reg, proxy, bundle = _wiring()
-    output, model_turns = await run_agentic_loop(
+    result = await run_agentic_loop_chain(
         solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        chain=_direct_chain("fake"),
         model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
     )
-    assert output == {"answer": "two"}
-    assert model_turns == 3
+    assert result.output == {"answer": "two"}
+    assert result.model_turns == 3
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 2
 
 
@@ -84,8 +103,9 @@ async def test_loop_non_json_final_error_includes_bounded_excerpt(fake_adk_model
     script = [("text", big), ("text", big)]  # prose on the original turn AND the reprompt
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
-        await run_agentic_loop(
+        await run_agentic_loop_chain(
             solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            chain=_direct_chain("fake"),
             model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
         )
     msg = str(ei.value)
@@ -109,15 +129,16 @@ async def test_loop_recovers_prose_wrapped_json_final_answer(fake_adk_model):
     )
     script = [("call", "lookup", {"key": "x"}), ("text", prose)]
     reg, proxy, bundle = _wiring()
-    output, model_turns = await run_agentic_loop(
+    result = await run_agentic_loop_chain(
         solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        chain=_direct_chain("fake"),
         model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
     )
-    assert output == {"answer": "done:42"}
+    assert result.output == {"answer": "done:42"}
     # NO side-effect replay during recovery: the tool ran exactly once (recovery is a
     # pure parse — it invokes no tool and makes no further model call).
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
-    assert model_turns == 2                  # the recovery makes no extra model turn
+    assert result.model_turns == 2                  # the recovery makes no extra model turn
 
 
 async def test_loop_unrecoverable_prose_still_halts_model_error(fake_adk_model):
@@ -135,8 +156,9 @@ async def test_loop_unrecoverable_prose_still_halts_model_error(fake_adk_model):
               ("text", "Still just narrating; no tool call and no JSON here either.")]
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
-        await run_agentic_loop(
+        await run_agentic_loop_chain(
             solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            chain=_direct_chain("fake"),
             model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
         )
     assert "content excerpt" in str(ei.value)
@@ -166,17 +188,18 @@ async def test_loop_reprompts_once_when_model_narrates_a_tool_call(captured_span
         ("text", json.dumps({"answer": "done:42"})),    # pass 2: JSON final answer
     ]
     reg, proxy, bundle = _wiring()
-    output, model_turns = await run_agentic_loop(
+    result = await run_agentic_loop_chain(
         solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        chain=_direct_chain("fake"),
         model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
     )
-    assert output == {"answer": "done:42"}
+    assert result.output == {"answer": "done:42"}
     # The tool ran EXACTLY ONCE — from the structured call in the reprompted turn, never
     # from the narrated prose. (Had the narrated "call lookup" been executed too, lookup
     # would appear twice.)
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
     # Three model turns total: the prose turn + the reprompt's call turn + its final turn.
-    assert model_turns == 3
+    assert result.model_turns == 3
     assert len(bundle.turns) == 3
 
 
@@ -199,8 +222,9 @@ async def test_loop_narrates_again_on_reprompt_halts_model_error(fake_adk_model)
     ]
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
-        await run_agentic_loop(
+        await run_agentic_loop_chain(
             solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            chain=_direct_chain("fake"),
             model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
         )
     assert "content excerpt" in str(ei.value)
@@ -227,8 +251,9 @@ async def test_loop_no_reprompt_when_no_model_budget_remains(fake_adk_model):
     ]
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError):
-        await run_agentic_loop(
+        await run_agentic_loop_chain(
             solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            chain=_direct_chain("fake"),
             model_factory=lambda name: fake_adk_model(script), max_llm_calls=1,
         )
     assert len(bundle.turns) == 1  # the reprompt was NOT attempted (budget exhausted)
@@ -249,14 +274,15 @@ async def test_loop_reprompts_on_schema_invalid_final_then_recovers(fake_adk_mod
         ("text", json.dumps({"answer": "fixed"})),      # turn 3 (after reprompt): valid
     ]
     reg, proxy, bundle = _wiring()
-    output, model_turns = await run_agentic_loop(
+    result = await run_agentic_loop_chain(
         solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+        chain=_direct_chain("fake"),
         model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
     )
-    assert output == {"answer": "fixed"}
+    assert result.output == {"answer": "fixed"}
     # The tool ran EXACTLY ONCE — from the structured call, never from a reprompt turn.
     assert sum(1 for e in proxy.log if e["tool"] == "lookup" and e["result"] == "ok") == 1
-    assert model_turns == 3                  # call + invalid-final + corrected-final
+    assert result.model_turns == 3                  # call + invalid-final + corrected-final
 
 
 async def test_loop_schema_reprompt_budget_is_shared_not_stacked(fake_adk_model):
@@ -298,8 +324,9 @@ async def test_loop_ambiguous_multiple_json_objects_fails_closed(fake_adk_model)
     script = [("text", prose), ("text", prose)]  # ambiguous on the original turn AND the reprompt
     reg, proxy, bundle = _wiring()
     with pytest.raises(LLMError) as ei:
-        await run_agentic_loop(
+        await run_agentic_loop_chain(
             solver.spec, In(task="solve"), tool_loop=bundle, run_id="r1",
+            chain=_direct_chain("fake"),
             model_factory=lambda name: fake_adk_model(script), max_llm_calls=8,
         )
     assert "content excerpt" in str(ei.value)

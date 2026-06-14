@@ -79,7 +79,7 @@ class ToolProxy:
         self._max_tool_calls_per_run = max_tool_calls_per_run
         self._max_distinct_tools_per_run = max_distinct_tools_per_run
         self._clock = clock
-        self._ledger = ledger if ledger is not None else TaintLedger()
+        self._ledger = ledger if ledger is not None else TaintLedger(managed=True)
         # Durable effect ledger (exactly-once replay on resume). None ⇒ no
         # cross-restart effect tracking, exactly as a missing CheckpointStore
         # means no cross-restart resume. Never a toggle for the guarantee.

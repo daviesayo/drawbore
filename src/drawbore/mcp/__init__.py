@@ -5,7 +5,7 @@ from .auth import OAuthConfig
 from .client import FakeMCPClient, MCPClient, MCPServerConfig, MCPToolSpec
 from .errors import MCPAuthError, MCPError, MCPToolNotFoundError
 from .live import LiveMCPClient
-from .registration import register_mcp_server
+from .registration import mcp_server, register_mcp_server
 
 __all__ = [
     "MCPError",
@@ -18,4 +18,5 @@ __all__ = [
     "FakeMCPClient",
     "LiveMCPClient",
     "register_mcp_server",
+    "mcp_server",
 ]
