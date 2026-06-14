@@ -133,7 +133,9 @@ async def test_taint_denial_log_entry_has_enriched_fields():
 async def test_token_denial_log_entry_has_enriched_fields():
     reg = ToolRegistry()
     reg.register_tool("svc.read", _ok, allowed_operations=["invoke"])
-    issuer, proxy = _wire(reg)
+    # Explicit unmanaged ledger: this test verifies that the logged scope value is
+    # "trusted" for an unseeded step — the documented opt-out contract.
+    issuer, proxy = _wire(reg, ledger=TaintLedger(managed=False))
     bad = issuer.issue("svc.read", "r1", "invoke")
     issuer.consume(bad, "svc.read", "r1", "invoke")   # pre-consume → now invalid
     with pytest.raises(TokenError):
@@ -142,7 +144,7 @@ async def test_token_denial_log_entry_has_enriched_fields():
     entry = proxy.log[-1]
     assert entry["result"] == "denied:token"
     assert entry["step"] == 3
-    assert entry["scope"] == "trusted"   # default unmanaged ledger
+    assert entry["scope"] == "trusted"   # explicit unmanaged ledger → unseeded step is TRUSTED
     assert entry["kind"] == "custom"
     assert entry["exfil_capable"] is False
 
@@ -156,7 +158,9 @@ async def test_unresolved_tool_denial_logs_kind_none_and_exfil_false():
     the log entry must have kind=None and exfil_capable=False (the tool was
     never resolved), plus the correct step and scope."""
     reg = ToolRegistry()   # empty — "ghost" is not registered
-    issuer, proxy = _wire(reg)
+    # Explicit unmanaged ledger: this test verifies logged scope for an
+    # unresolved-tool denial with the opt-out documented.
+    issuer, proxy = _wire(reg, ledger=TaintLedger(managed=False))
     tok = issuer.issue("ghost", "r1", "invoke")
     with pytest.raises(ToolAccessError):
         await proxy.invoke("ghost", {}, tok, _ctx("r1", 7), "invoke")
@@ -164,7 +168,7 @@ async def test_unresolved_tool_denial_logs_kind_none_and_exfil_false():
     entry = proxy.log[-1]
     assert entry["result"] == "denied:scope"
     assert entry["step"] == 7
-    assert entry["scope"] == "trusted"   # default unmanaged ledger
+    assert entry["scope"] == "trusted"   # explicit unmanaged ledger → unseeded step is TRUSTED
     assert entry["kind"] is None
     assert entry["exfil_capable"] is False
 

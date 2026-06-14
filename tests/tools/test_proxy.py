@@ -3,7 +3,8 @@ import types
 import pytest
 from drawbore.tools import ToolProxy, ToolRegistry, TokenIssuer
 from drawbore.tools.proxy import ToolProxy  # noqa: F811 (same symbol)
-from drawbore.tools.errors import ToolAccessError, TokenError, CircuitBreakerError
+from drawbore.tools.errors import ToolAccessError, TokenError, CircuitBreakerError, TaintError
+from drawbore.tools.taint import TaintLedger
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,10 @@ def _setup(max_calls=3):
     reg = ToolRegistry()
     reg.register_tool("db.read", _echo, allowed_operations=["invoke"])
     issuer = TokenIssuer()
+    # No ledger= here, so the proxy's taint ledger defaults to managed=True
+    # (fail-closed). These helpers register no exfil_capable tool, so the exfil
+    # gate never fires; a future exfil_capable tool added here would need an
+    # explicit ledger=TaintLedger(managed=False) to opt out.
     proxy = ToolProxy(reg, issuer, max_calls_per_tool=max_calls)
     return reg, issuer, proxy
 
@@ -153,3 +158,33 @@ async def test_breaker_trip_is_logged_as_denied_breaker():
     with pytest.raises(CircuitBreakerError):
         await proxy.invoke("svc.do", {"x": 1}, tok, _ctx2(step=0), "invoke")  # 2nd: trips
     assert proxy.log[-1]["result"] == "denied:breaker"
+
+
+# ---------------------------------------------------------------------------
+# Taint exfil gate: a bare ToolProxy must fail closed
+# ---------------------------------------------------------------------------
+
+async def test_bare_proxy_exfil_gate_fails_closed():
+    """A ToolProxy built with no ledger= must block exfil_capable tools on an
+    unseeded (run_id, step) — fail closed, not fail open."""
+    reg = ToolRegistry()
+    reg.register_tool("ext.send", _echo, allowed_operations=["invoke"], exfil_capable=True)
+    issuer = TokenIssuer()
+    # No ledger= argument — the proxy picks its own fallback.
+    proxy = ToolProxy(reg, issuer)
+    tok = issuer.issue("ext.send", "r1")
+    with pytest.raises(TaintError):
+        await proxy.invoke("ext.send", {"data": "secret"}, tok, _ctx("r1", 0))
+
+
+async def test_explicit_unmanaged_ledger_preserves_opt_out():
+    """An explicit ledger=TaintLedger(managed=False) still allows exfil_capable
+    calls on an unseeded step — the documented opt-out contract is preserved."""
+    reg = ToolRegistry()
+    reg.register_tool("ext.send", _echo, allowed_operations=["invoke"], exfil_capable=True)
+    issuer = TokenIssuer()
+    proxy = ToolProxy(reg, issuer, ledger=TaintLedger(managed=False))
+    tok = issuer.issue("ext.send", "r1")
+    # Should NOT raise — the caller explicitly opted out of fail-closed.
+    result = await proxy.invoke("ext.send", {"data": "ok"}, tok, _ctx("r1", 0))
+    assert result == {"echo": {"data": "ok"}}

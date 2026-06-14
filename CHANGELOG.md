@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (run-scoped context is carried internally by the orchestrator), so the type was
   inert. Code that imported it can drop the import.
 
+### Security
+
+- A `ToolProxy` constructed without an explicit `ledger=` argument now fails
+  closed (UNTRUSTED scope) on the taint exfil gate for unseeded steps, instead
+  of failing open (TRUSTED). Pass `ledger=TaintLedger(managed=False)` explicitly
+  to opt into the permissive standalone contract.
+
 ### Fixed
 
 - The confinement receipt is now minted on every run without exception: if
