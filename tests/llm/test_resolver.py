@@ -96,6 +96,13 @@ def test_missing_profile_raises_config_error():
         resolve_chain(_spec("profile:nope"), _cfg(), credential_checker=AllAvailable())
 
 
+def test_no_declared_model_raises_config_error():
+    # A spec with neither model nor fallback has no chain to resolve; resolve_chain
+    # fails closed with a legible config error rather than producing an empty chain.
+    with pytest.raises(LLMConfigError):
+        resolve_chain(_spec(None), LLMRuntimeConfig(), credential_checker=AllAvailable())
+
+
 def test_missing_required_credential_raises_config_error():
     class NoneAvailable:
         def has_credential(self, *, provider, credential_env):

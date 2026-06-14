@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `drawbore.llm.resolve_model_chain` and the compatibility `run_agentic_loop`
+  entrypoint have been removed. Model resolution now goes through the runtime
+  (`resolve_chain` in `drawbore.llm`), which expands `profile:` references and
+  fails closed with a legible configuration error when a profile is not found.
+  The removed `resolve_model_chain` returned `profile:` references unexpanded;
+  the pipeline engine never used it, so this only affected code that imported the
+  public export directly.
 - `drawbore.state.RunState` has been removed. It carried no live reads or writes
   (run-scoped context is carried internally by the orchestrator), so the type was
   inert. Code that imported it can drop the import.

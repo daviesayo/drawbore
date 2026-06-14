@@ -42,7 +42,6 @@ from drawbore.llm import (
     ModelAudit,
     ModelUnavailableError,
     build_model_request,
-    resolve_model_chain,
 )
 from drawbore.llm.classify import classify_provider_exception
 from drawbore.llm.resolution import ResolvedModelChain
@@ -245,43 +244,6 @@ async def _consume_pass(
     if multicall_error is not None:              # >1 tool call in one turn — fail closed
         raise multicall_error
     return final_text
-
-
-async def run_agentic_loop(
-    spec: AgentSpec,
-    payload: Any,
-    *,
-    tool_loop: ToolLoopBundle,
-    run_id: str,
-    model_factory: Callable[[str], Any],
-    max_llm_calls: int,
-) -> tuple[dict, int]:
-    """Single-attempt entrypoint (kept for compatibility). Resolves the direct chain
-    (no fallback) and runs ONE pass on the primary model. Raises the captured tool
-    failure (immediate abort) or ``LLMError`` on non-JSON / loop exhaustion. New
-    code should use ``run_agentic_loop_chain``; the engine does.
-
-    Returns ``(output_dict, model_turns)`` (the reprompt count is carried by the chain
-    driver's ``LoopResult``, not this compat tuple). This compat wrapper ensures a raw
-    ADK error (e.g. loop exhaustion) surfaces as an ``LLMError``. ``_run_one_attempt``
-    re-raises the raw provider/ADK exception so the chain driver can classify it; here,
-    where there is no chain to fall back on, any non-tool, non-``LLMError`` exception is
-    wrapped."""
-    chain = resolve_model_chain(spec)            # primary first; fallback rejected upstream
-    try:
-        output, turns, _reprompts = await _run_one_attempt(
-            spec, payload, tool_loop=tool_loop, run_id=run_id, model=chain[0],
-            model_factory=model_factory, max_llm_calls=max_llm_calls,
-        )
-        return output, turns
-    except LLMError:
-        raise                                    # already legible (non-JSON / exhaustion / multicall)
-    except Exception as exc:
-        # Belt-and-suspenders: ``_run_one_attempt`` already re-raises the captured tool
-        # failure on this path, so this guard is harmless and purely defensive.
-        if tool_loop.failures:                   # a tool failure/denial — surface it precisely
-            raise tool_loop.failures[0]
-        raise LLMError(f"agentic loop failed for agent '{spec.name}': {exc}") from exc
 
 
 async def run_agentic_loop_chain(

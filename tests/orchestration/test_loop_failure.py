@@ -4,9 +4,10 @@ import pytest
 from pydantic import BaseModel
 
 from drawbore.agent import agent
-from drawbore.orchestration.adk_loop import run_agentic_loop
+from drawbore.orchestration.adk_loop import run_agentic_loop_chain
 from drawbore.orchestration.engine import ToolLoopBundle
 from drawbore.llm import LLMError
+from drawbore.llm.resolution import ModelAttempt, ResolvedModelChain
 from drawbore.tools import ToolRegistry, ToolProxy, TokenIssuer, RunContext
 from drawbore.tools.errors import ToolAccessError
 
@@ -17,6 +18,21 @@ class In(BaseModel):
 
 class Out(BaseModel):
     answer: str
+
+
+def _direct_chain(model: str) -> ResolvedModelChain:
+    """Build a minimal single-attempt ResolvedModelChain for a direct model string."""
+    attempt = ModelAttempt(
+        provider=None,
+        model=model,
+        request_model=model,
+        declared_ref=model,
+        source="direct",
+        fallback_on=("timeout", "rate_limit", "server_error", "provider_unavailable"),
+        credential_env=None,
+        credential_required=False,
+    )
+    return ResolvedModelChain(declared=(model,), attempts=(attempt,))
 
 
 def _wiring(declared=("a", "b"), allow_a=("invoke",), allow_b=("invoke",)):
@@ -47,8 +63,10 @@ async def test_tool_failure_aborts_immediately_second_tool_never_runs(fake_adk_m
     reg, proxy, bundle = _wiring(allow_a=("read",))  # 'a' denies 'invoke'
     script = [("call", "a", {}), ("call", "b", {}), ("final", json.dumps({"answer": "x"}))]
     with pytest.raises(ToolAccessError):
-        await run_agentic_loop(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
-                               model_factory=lambda name: fake_adk_model(script), max_llm_calls=8)
+        await run_agentic_loop_chain(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
+                                     chain=_direct_chain("fake"),
+                                     model_factory=lambda name: fake_adk_model(script),
+                                     max_llm_calls=8)
     # 'b' was NEVER called through the proxy (no ok entry for 'b')
     assert not any(e["tool"] == "b" and e["result"] == "ok" for e in proxy.log)
 
@@ -58,8 +76,10 @@ async def test_loop_bound_halts_a_runaway_loop(fake_adk_model):
     reg, proxy, bundle = _wiring()
     script = [("call", "a", {})] * 100      # never a "final"
     with pytest.raises(LLMError):
-        await run_agentic_loop(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
-                               model_factory=lambda name: fake_adk_model(script), max_llm_calls=3)
+        await run_agentic_loop_chain(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
+                                     chain=_direct_chain("fake"),
+                                     model_factory=lambda name: fake_adk_model(script),
+                                     max_llm_calls=3)
 
 
 async def test_non_json_final_answer_fails_closed(fake_adk_model):
@@ -68,8 +88,10 @@ async def test_non_json_final_answer_fails_closed(fake_adk_model):
     reg, proxy, bundle = _wiring()
     script = [("final", "not json at all"), ("text", "still not json")]
     with pytest.raises(LLMError):
-        await run_agentic_loop(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
-                               model_factory=lambda name: fake_adk_model(script), max_llm_calls=8)
+        await run_agentic_loop_chain(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
+                                     chain=_direct_chain("fake"),
+                                     model_factory=lambda name: fake_adk_model(script),
+                                     max_llm_calls=8)
 
 
 async def test_multiple_function_calls_in_one_turn_fail_closed(fake_adk_model):
@@ -77,8 +99,10 @@ async def test_multiple_function_calls_in_one_turn_fail_closed(fake_adk_model):
     reg, proxy, bundle = _wiring()
     script = [("multicall", [("a", {}), ("b", {})])]
     with pytest.raises(LLMError):
-        await run_agentic_loop(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
-                               model_factory=lambda name: fake_adk_model(script), max_llm_calls=8)
+        await run_agentic_loop_chain(_spec(), In(task="t"), tool_loop=bundle, run_id="r1",
+                                     chain=_direct_chain("fake"),
+                                     model_factory=lambda name: fake_adk_model(script),
+                                     max_llm_calls=8)
     # The fail-CLOSED guarantee: the guard fires on the model-output event,
     # before ADK dispatches the calls, so NEITHER requested tool reaches the proxy.
     assert proxy.log == []

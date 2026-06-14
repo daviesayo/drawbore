@@ -1,9 +1,8 @@
 import json
-import pytest
 from pydantic import BaseModel
 from drawbore.agent import agent
 from drawbore.llm import (
-    ModelRequest, ModelResponse, resolve_model_chain, build_model_request, LLMError,
+    ModelRequest, ModelResponse, build_model_request,
 )
 
 
@@ -21,20 +20,6 @@ def _spec(model=None, fallback=None, instructions=None):
     async def fn(v: In) -> Out:
         return Out(risk="low")
     return fn.spec
-
-
-def test_resolve_chain_is_model_then_fallback():
-    assert resolve_model_chain(_spec(model="m1", fallback="m2")) == ("m1", "m2")
-
-
-def test_resolve_chain_dedupes_and_drops_none():
-    assert resolve_model_chain(_spec(model="m1", fallback="m1")) == ("m1",)
-    assert resolve_model_chain(_spec(model="m1")) == ("m1",)
-
-
-def test_resolve_chain_raises_when_no_model():
-    with pytest.raises(LLMError):
-        resolve_model_chain(_spec())
 
 
 def test_build_model_request_is_explicit_and_carries_payload_and_schema():
