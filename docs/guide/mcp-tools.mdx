@@ -124,6 +124,45 @@ a flag to a tool the agent can never reach.
 See [Taint and trust](/guide/taint-and-trust) for the full model: `initial_trust` for
 untrusted-ingest workflows, cross-step propagation, and `When` branch gating.
 
+## Managing session lifetime
+
+`register_mcp_server` opens a transport session and never closes it. That is
+intentional for process-lifetime registrations: register once at startup and
+keep the session live for the duration of the process. In long-lived services
+or per-request scopes, leaving sessions open accumulates connections over time.
+Use `mcp_server` in those cases:
+
+```python
+from drawbore.mcp import mcp_server, LiveMCPClient
+
+async with mcp_server(
+    registry,
+    name="slack",
+    url="https://slack.com/mcp",
+    allowed_tools=["send_message"],
+    client=LiveMCPClient(),
+) as refs:
+    # refs == ("mcp://slack/send_message",)
+    # The tool is registered and the session is live.
+    await pipeline.run(event)
+
+# The session is closed here — even if the block raised.
+```
+
+`mcp_server` takes the same parameters as `register_mcp_server` and yields the
+same tuple of `mcp://<name>/<tool>` refs. The only difference is lifecycle: when
+the `async with` block exits — normally or on an exception — the live MCP session
+is closed in a `finally` block, so the transport never leaks. The registered tools
+stay in `registry`; only the underlying connection is torn down.
+
+When your registration itself might fail (for example a misconfigured
+`allowed_tools` list), `mcp_server` still closes the session cleanly and
+propagates the error.
+
+Use `register_mcp_server` when you register once at startup and want the session
+to live for the process lifetime; `mcp_server` when the connection should be
+scoped to a block of work.
+
 ## Talking to a real server
 
 The live transport ships in the optional `drawbore[mcp]` extra:

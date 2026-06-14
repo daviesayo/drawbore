@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ToolRegistry.tools()` returns a read-only view of the registered tools, and
   `ToolRegistry.clone()` returns an independent copy, so callers no longer reach
   into private state.
+- `mcp_server(registry, ...)` async context manager in `drawbore.mcp`: registers
+  an MCP server's declared tools and closes the live session when the block exits
+  (even on exception). Use it in long-lived processes or per-request scopes to
+  scope connections and avoid session leaks. Takes the same parameters as
+  `register_mcp_server` and yields the same tuple of `mcp://<name>/<tool>` refs.
 
 ### Changed
 
@@ -50,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP session leak: long-lived processes that reuse an MCP server across requests
+  now have a safe scoping path via `mcp_server(...)`. `register_mcp_server` is
+  unchanged — it does not close the session on success, so it remains correct for
+  process-lifetime registrations where the caller owns teardown.
 - The confinement receipt is now minted on every run without exception: if
   receipt construction itself fails (for example on a malformed tool-call log
   entry), `mint_receipt` returns a deterministic `unverifiable` receipt naming the
