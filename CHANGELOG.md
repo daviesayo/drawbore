@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The `max_bytes` input-size gate in `sanitize()` now measures serialized JSON
+  byte length (`json.dumps(...).encode("utf-8")` with `ensure_ascii=True`),
+  matching the actual byte length the model prompt serializer produces.  The
+  previous `repr()`-based measurement undercounted multibyte text (CJK, Arabic,
+  Devanagari, etc.) by roughly 2x, so the 1 MiB default could admit up to ~2 MiB
+  of multibyte input.  The bound is now accurate.
 - A `ToolProxy` constructed without an explicit `ledger=` argument now fails
   closed (UNTRUSTED scope) on the taint exfil gate for unseeded steps, instead
   of failing open (TRUSTED). Pass `ledger=TaintLedger(managed=False)` explicitly
