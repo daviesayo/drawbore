@@ -1,0 +1,200 @@
+---
+title: "Eve borrow ledger"
+description: "A design record: which ideas from Vercel's Eve agent framework drawbore adopts, defers, or declines — and the drawbore-shaped design for the ones we take."
+---
+
+> Status: **Accepted (lean tranche)** · Date: 2026-06-18
+>
+> We implement against this doc, not from memory. It records which ideas from
+> Vercel's **Eve** agent framework drawbore should adopt, which it should
+> deliberately not, and — for the ones we take — the drawbore-shaped design.
+
+References: [Eve blog](https://vercel.com/blog/introducing-eve) ·
+[Eve docs](https://eve.dev/docs/introduction) ·
+[vercel/eve](https://github.com/vercel/eve)
+
+## 1. Framing
+
+**The thesis fork.** Eve maximizes capability and makes it durable ("Next.js
+for agents": a filesystem of agent directories that compiles to Vercel
+Functions, a per-session sandbox where the model runs bash, durable workflow
+replay, channels, evals). Drawbore minimizes capability and makes it *provable*:
+typed contracts at every edge, least-privilege audited tools, halt-and-escalate,
+a regulator-readable audit trail, and a safety ratchet that refuses any manifest
+that regresses a known property.
+
+So we are **not** porting Eve. We harvest the few places Eve is genuinely more
+*mature* where the idea also serves drawbore's thesis — and reshape each so it
+strengthens constraint rather than dilutes it.
+
+**Scope (agreed): _Lean & additive._** This round borrows only changes that are
+(a) additive, (b) in-thesis, and (c) do **not** touch the safety-critical core
+(the tool proxy / token issuer / executor / taint engine / schema gate).
+Anything that would modify the enforcement chokepoints is recorded here but
+deferred to its own spec.
+
+**Governing constraints for any borrow.**
+
+1. **Dependency policy.** Core runtime deps are fixed: `pydantic`, `google-adk`,
+   `litellm`, `opentelemetry-{api,sdk}`. No new runtime dependency without an
+   explicit decision. CLI and tooling use the stdlib only.
+2. **MIT core.** Borrows ship in the MIT core unless they inherently belong to
+   the managed service (real escalation channels, durable Postgres stores).
+3. **Don't weaken a guarantee.** No new path where untrusted input gains
+   authority, a secret reaches the audit trail, or a control becomes
+   configurable-off.
+4. **Legibility.** Anything new that affects a run shows up in the audit trail /
+   a legible artifact, like the rest of drawbore.
+
+## 2. The ledger
+
+Every Eve capability considered, with a verdict. `BORROW` = take it this round.
+`DEFER` = valuable and in-thesis but out of the lean scope (own spec later).
+`DECLINE` = against the thesis or a platform business we won't enter.
+
+| # | Eve capability | drawbore today | Verdict | Rationale |
+|---|----------------|----------------|---------|-----------|
+| 1 | CLI + init wizard + dev server | No CLI at all | **BORROW** | Reshape as `drawbore check`: the static gate (resolution + authority/schema ratchet) as one CI command. Pure thesis, stdlib, additive. |
+| 2 | `instructions.ts` + ordered `agent/instructions/` fragments | `instructions: str \| None`, static | **BORROW** | Allow `str \| Sequence[str]` composed deterministically at decoration time. Tiny, safe, `build.py` untouched. |
+| 3 | Per-tool approval (`never/once/always`) | Per-*agent* `requires_human_approval` | **DEFER → next** | In-thesis and wanted; modifies the proxy chokepoint → its own spec. **First deferred item to pick up.** |
+| 6 | OpenAPI → typed tools (`defineOpenAPIConnection`) | MCP tools only | **DEFER → 2nd** | Additive module; genuinely useful. **Second deferred item.** May want a dep decision for spec parsing. |
+| 4 | On-demand skills (`load_skill`) | None | **DEFER** | Strong idea; only meaningful inside the model loop; needs audit integration. |
+| 5 | Auto context compaction (~90% window) | Evidence compression per-input only | **DEFER** | Real reliability gap, but surgery on the agentic loop — own spec. |
+| 7 | Filesystem-first authoring ("agents as directories") | JSON manifest + `AgentCatalog`; code defines agents | **DEFER / partial DECLINE** | Doesn't map cleanly: drawbore agents carry *business logic* (code), not just config. The CLI `new` scaffold covers the ergonomic intent. |
+| 8 | Durable suspend-and-resume for approval | **Already present**: `FileCheckpointStore` persists approval requests atomically; refuse-on-drift resume | **DECLINE (already have)** | drawbore is at parity or ahead; core just lacks the managed channel + Postgres store (by design). |
+| 9 | Credential brokering (secrets never in sandbox) | No sandbox; tool args hashed, **never logged**; creds stay in env/provider | **DECLINE (already safe)** | drawbore's audit boundary is already secret-safe. |
+| 10 | Sandbox (model runs arbitrary bash) | Deliberately absent | **DECLINE** | Exactly the capability drawbore refuses. Off-thesis. |
+| 11 | Channels (Slack/Discord/…) | Escalation delivery is the managed service | **DECLINE** | Platform surface; not core. |
+| 12 | Vercel-Functions hosting / streaming HTTP API | drawbore is a library you embed | **DECLINE** | Platform business; not our lane. |
+| 13 | Evals (assertions/judge/reporters) | Safety gauntlet + ratchet (regression-focused) | **DEFER** | Gauntlet already covers regression; a quality-eval harness could come later, drawbore-shaped. |
+
+**Net for this round:** BORROW #1 (CLI) and #2 (composable instructions).
+Deferred work, in order: **#3 per-tool approval, then #6 OpenAPI tools.**
+
+## 3. Designs — what we take this round
+
+### 3.1 `drawbore` CLI (ledger #1)
+
+**Motivation.** Eve's biggest DX/maturity edge that drawbore lacks *entirely* is
+a command line. We don't copy "scaffold and run a server"; we point a CLI at the
+thing drawbore is about — **verification**. `drawbore check` turns the existing
+fail-closed resolver and the safety-ratchet gates (authority monotonicity +
+input-schema relaxation, both already implemented on `PipelineConfig`) into one
+command any CI job runs over a manifest.
+
+**Surface (confirmed):** `check`, `new`, `version`. No `run` (a runner implies
+engine/store wiring that belongs to the embedding app) and no `audit` (needs a
+live `RunResult`, not a file) this round.
+
+```
+drawbore check MANIFEST [--catalog MOD:ATTR] [--registry MOD:ATTR] [--against BASELINE]
+drawbore new NAME [--dir DIR]
+drawbore version
+```
+
+Stdlib `argparse`; new package `src/drawbore/cli/`; entry point
+`drawbore = "drawbore.cli:main"`; also `python -m drawbore`.
+
+- **`check`** is layered, each layer optional and fail-closed:
+  1. *Structural* (always): `PipelineConfig.model_validate` — unknown fields and
+     a bad `schema_version` fail here, before any app code is imported.
+  2. *Resolution* (`--catalog`): `from_json(...)` resolves agent refs against
+     live code and **drift-checks** every declaration.
+  3. *Ratchet* (`--against BASELINE`, manifest-only, **no code needed**):
+     `check_no_new_authority` + `check_no_schema_relaxation`.
+- **`new`** scaffolds a **richer, runnable package** (see below) — the
+  drawbore-shaped analog of `eve init`, but a *typed, tested* starter.
+- **`version`** prints the installed version via `importlib.metadata`.
+
+**Exit codes (the CI contract):** `0` all passed · `1` a check failed · `2`
+usage error.
+
+**`new` — richer scaffold (decision: richer).** Instead of a single file,
+`drawbore new NAME` writes a package mirroring drawbore's own `examples/`
+layout, immediately runnable and testable:
+
+```
+NAME/
+├── __init__.py
+├── pipeline.py          # typed agents + Pipeline + an AgentCatalog
+├── test_NAME.py         # pytest: runs the pipeline; round-trips the manifest
+└── README.md            # what it is, how to run, how to check a manifest
+```
+
+`pipeline.py` exposes a `catalog` so the package works end-to-end with the CLI:
+`pipeline.run(...)` for execution, and `to_json(pipeline, agents=catalog)` to
+emit a manifest that `drawbore check NAME/manifest.json --catalog
+NAME.pipeline:catalog` then gates. The generated `test_NAME.py` asserts the run
+completes **and** that the manifest round-trips (`to_config`→`from_config`
+equality) — so the scaffold demonstrates the verification workflow without
+shipping a fingerprint-fragile static manifest file. The README shows the
+one-liner to export a manifest and run `drawbore check` on it.
+
+`new` refuses to overwrite an existing target and rejects names that aren't
+valid Python identifiers (the name is both a module/package name and the
+pipeline name).
+
+**Tests.** Structural pass/fail (unknown field, bad version, bad JSON);
+resolution pass + drift fail against a fixture catalog; `--against` pass on
+identity, fail on a tool-widened candidate, fail on a relaxed input schema;
+`new` writes the package + refuses overwrite + rejects bad identifiers, and the
+scaffolded `pipeline.py`/`test` actually run; `version` prints. Exit codes
+asserted throughout.
+
+### 3.2 Composable instructions (ledger #2)
+
+**Motivation.** Eve lets instructions be a single file, an ordered
+`agent/instructions/` directory of fragments, or typed `instructions.ts`
+composition. drawbore's `instructions` is a single static `str`. The safe,
+in-thesis slice is **fragment composition**: build instructions from ordered
+pieces (shared preamble + agent-specific body + standing constraints) without
+hand-concatenating.
+
+**Shape.** Accept `instructions: str | Sequence[str]` on `@agent(...)`. Normalize
+to a single `str` **at decoration time** (join non-empty fragments with a blank
+line); store the joined string in the frozen `AgentSpec`. Therefore:
+
+- `AgentSpec.instructions` stays `str | None` — **no downstream change**.
+- `llm/build.py` is **byte-identical** — it still receives one string.
+- The manifest round-trip is unchanged (it serializes the final string).
+
+**Deliberately excluded (this round).** *Input-derived* dynamic instructions.
+Eve's `defineDynamic` resolves from the verified principal/channel; drawbore has
+no per-call principal in core, and resolving instructions from the model *input*
+would let untrusted data steer the system prompt — a direct taint-thesis
+violation. We compose only *static* fragments.
+
+**Tests.** `Sequence[str]` joins in order; empty/blank fragments dropped; a lone
+`str` unchanged; `None` unchanged; the joined value survives the JSON
+round-trip; `build_model_request` output identical for `"a\n\nb"` vs
+`["a","b"]`.
+
+## 4. Deferred (recorded, ordered)
+
+1. **Per-tool approval (#3)** — `requires_approval: never|once|always` per tool
+   in the registry, enforced in the proxy and surfaced through the existing
+   typed approval + durable-suspend machinery. **Leads the next tranche.**
+2. **OpenAPI tools (#6)** — import an OpenAPI 3.x spec to schema-validated tools,
+   auto-classified for taint/exfil. **Second.** Possible dep decision.
+3. On-demand skills (#4); loop context compaction (#5); quality evals (#13).
+
+## 5. Declined (with reason)
+
+- **Filesystem-as-source-of-truth for agents (#7)** — drawbore agents are code,
+  not config; the CLI `new` scaffold covers the ergonomics; full parity is
+  off-thesis.
+- **Durable approval (#8), credential audit-safety (#9)** — already at parity or
+  ahead.
+- **Sandbox (#10), channels (#11), hosting/streaming (#12)** — platform surface;
+  against the constraint thesis or a different business.
+
+## 6. Sequence
+
+1. ✅ Land this doc.
+2. **CLI** (#1) + tests + `docs/guide/cli.mdx` (+ nav entry).
+3. **Composable instructions** (#2) + tests + a note in the model-backed agents
+   guide.
+4. Next tranche, in order: **per-tool approval (#3)**, then **OpenAPI tools
+   (#6)** — each its own doc + commit.
+
+Each lands as its own commit on `claude/eve-drawbore-tradeoffs-2c2b9x`.
