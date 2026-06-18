@@ -53,6 +53,9 @@ asyncio_mode = "auto"
 testpaths = ["tests", "examples"]
 addopts = "--import-mode=importlib"
 
+[project.scripts]
+drawbore = "drawbore.cli:main"
+
 [project.urls]
 Repository = "https://github.com/daviesayo/drawbore"
 Documentation = "https://github.com/daviesayo/drawbore/tree/main/docs"

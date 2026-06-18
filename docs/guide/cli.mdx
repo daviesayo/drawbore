@@ -1,0 +1,93 @@
+---
+title: "The drawbore CLI"
+description: "Gate a pipeline manifest in CI with one command — structural validation, drift-checked resolution, and the safety ratchet — plus a typed scaffold."
+---
+
+Drawbore ships a small command-line tool. Its center of gravity is **`drawbore
+check`**: the same fail-closed resolution and safety-ratchet gates the SDK uses,
+exposed as one command any CI job can run over a JSON
+[manifest](/docs/guide/json-config) — no running system, and for the
+manifest-only checks, no application code at all.
+
+```bash
+drawbore check MANIFEST [--catalog MODULE:ATTR] [--registry MODULE:ATTR] [--against BASELINE]
+drawbore new NAME [--dir DIR]
+drawbore version
+```
+
+It is also runnable as `python -m drawbore`. The CLI is stdlib-only and adds no
+dependency.
+
+## `check` — a layered, fail-closed gate
+
+Each layer is optional and independently fail-closed. The command exits non-zero
+if any requested layer fails.
+
+1. **Structural** (always). The manifest is parsed and validated. Unknown fields
+   (every config model is `extra="forbid"`) and a malformed document fail here,
+   before any application code is imported.
+
+2. **Resolution** (`--catalog MODULE:ATTR`). Resolves the manifest's symbolic
+   agent refs against your live `Agent` objects via
+   [`from_json`](/docs/guide/json-config), drift-checking every declaration. A
+   version, tool, model, schema, or any other declared-contract mismatch fails
+   the check.
+
+   ```bash
+   drawbore check pipeline.json --catalog myapp.pipelines:catalog
+   ```
+
+3. **Ratchet** (`--against BASELINE`). Diffs the candidate against a baseline
+   manifest and fails if it grants new capability authority
+   ([authority regression](/docs/guide/authority-regression)) or relaxes any
+   agent's input schema ([safety ratchet](/docs/guide/safety-ratchet)). This
+   layer needs **no code** — it reads both manifests only:
+
+   ```bash
+   drawbore check candidate.json --against baseline.json
+   ```
+
+Combine freely — e.g. resolve against code *and* ratchet against a baseline in
+one invocation.
+
+### Exit codes (the CI contract)
+
+| Code | Meaning |
+|------|---------|
+| `0` | every requested check passed |
+| `1` | a check failed (bad manifest, drift, authority widening, schema relaxation) |
+| `2` | usage error (bad arguments, unreadable file, malformed `--catalog`) |
+
+A typical CI step:
+
+```bash
+drawbore check pipeline.json --catalog myapp.pipelines:catalog --against main/pipeline.json
+```
+
+## `new` — a typed, runnable scaffold
+
+`drawbore new NAME` writes a minimal, runnable pipeline **package** mirroring the
+project's own `examples/` layout:
+
+```
+NAME/
+├── __init__.py
+├── pipeline.py          # typed agents + Pipeline + an AgentCatalog
+├── test_NAME.py         # runs the pipeline; round-trips the manifest
+└── README.md            # run it, test it, check it
+```
+
+`pipeline.py` exposes a `catalog`, so the package works end-to-end with `check`:
+run it with `pipeline.run(...)`, export a manifest with `to_json(pipeline,
+agents=catalog)`, then gate that manifest with `drawbore check`. `new` refuses to
+overwrite an existing path and rejects names that aren't valid Python
+identifiers (the name is both a package name and the pipeline name).
+
+## `version`
+
+Prints the installed Drawbore version.
+
+```bash
+$ drawbore version
+drawbore 0.9.0
+```

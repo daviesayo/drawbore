@@ -25,6 +25,7 @@
           "docs/guide/mcp-tools",
           "docs/guide/local-testing",
           "docs/guide/json-config",
+          "docs/guide/cli",
           "docs/guide/evidence-compression",
           "docs/guide/escalation",
           "docs/guide/human-approval",
@@ -60,6 +61,12 @@
           "docs/agents/common-mistakes",
           "docs/agents/testing-drawbore",
           "docs/agents/context7"
+        ]
+      },
+      {
+        "group": "Design notes",
+        "pages": [
+          "docs/design/eve-borrow-ledger"
         ]
       }
     ]
