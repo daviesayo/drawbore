@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `drawbore` command-line tool (`drawbore.cli`, also `python -m drawbore`;
+  stdlib-only, no new dependency). `drawbore check MANIFEST` is a fail-closed CI
+  gate over a JSON manifest: structural validation always, optional drift-checked
+  resolution against live code (`--catalog MODULE:ATTR`), and an optional
+  manifest-only safety ratchet against a baseline (`--against BASELINE`) that
+  fails on authority widening or input-schema relaxation. `drawbore new NAME`
+  scaffolds a runnable, typed pipeline package (pipeline + test + README);
+  `drawbore version` prints the installed version. Exit codes: `0` pass, `1`
+  check failed, `2` usage error. See `docs/guide/cli.mdx`.
+- `@agent(instructions=...)` now accepts a sequence of fragments in addition to a
+  single string. Fragments are stripped, blanks dropped, and the rest joined with
+  a blank line, composed statically at decoration time and stored as a single
+  string — so the model request is byte-identical to passing the joined string,
+  and instructions are never derived from a step's input.
+
 ## [0.9.0] - 2026-06-14
 
 ### Added

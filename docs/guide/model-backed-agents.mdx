@@ -31,6 +31,32 @@ async def score(tx: Tx) -> RiskScore:
 
 An agent with no `model` is a deterministic agent and runs your function as before.
 
+## Composable instructions
+
+`instructions` accepts either a single string or a sequence of fragments, composed
+in order at decoration time — useful for sharing a standing preamble across agents
+and appending an agent-specific body:
+
+```python
+PREAMBLE = "You are a compliance assistant. Be terse and cite the rule."
+
+@agent(
+    input=Tx,
+    output=RiskScore,
+    model="profile:judgment",
+    instructions=[PREAMBLE, "Assess the transaction's risk."],
+)
+async def score(tx: Tx) -> RiskScore:
+    ...
+```
+
+Fragments are stripped, blanks are dropped, and the rest are joined with a blank
+line; the result is stored as a single string, so the prompt the model sees is
+identical to passing that joined string directly. Composition is **static** —
+instructions are fixed at decoration time and are never derived from a step's
+input, which would let untrusted data steer the system prompt (input is data, not
+authority).
+
 ## Run it through the runtime
 
 The model call goes through the `LLMRuntime` you provide. The runtime owns

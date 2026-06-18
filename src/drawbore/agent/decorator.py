@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 
 from pydantic import BaseModel
 
 from .spec import AgentFn, AgentSpec
+
+
+def _compose_instructions(value: str | Sequence[str] | None) -> str | None:
+    """Normalise the ``instructions`` argument to a single string (or ``None``).
+
+    A plain ``str`` (or ``None``) is returned unchanged, so existing behaviour is
+    byte-identical. A sequence of fragments is composed in order: each fragment is
+    stripped, blank fragments are dropped, and the rest are joined with a blank
+    line. An empty or all-blank sequence normalises to ``None``. The result is
+    stored in the frozen ``AgentSpec``, so nothing downstream — ``build.py``, the
+    manifest round-trip — sees anything but a string.
+
+    Composition is **static**: fragments are fixed at decoration time. Instructions
+    are never derived from a step's input, which would let untrusted data steer the
+    system prompt (input is data, not authority).
+    """
+    if value is None or isinstance(value, str):
+        return value
+    fragments = [str(fragment).strip() for fragment in value]
+    fragments = [fragment for fragment in fragments if fragment]
+    if not fragments:
+        return None
+    return "\n\n".join(fragments)
 
 
 class Agent:
@@ -39,12 +62,17 @@ def agent(
     version: str = "0.0.0",
     model: str | None = None,
     fallback_model: str | None = None,
-    instructions: str | None = None,
+    instructions: str | Sequence[str] | None = None,
 ) -> Callable[[AgentFn], Agent]:
     """Decorate an async function into an :class:`Agent`.
 
     The developer writes business logic only; the framework owns schema
     enforcement at the boundaries.
+
+    ``instructions`` may be a single string or a sequence of fragments composed
+    in order (shared preamble + agent body + standing constraints) — see
+    :func:`_compose_instructions`. Composition is static; instructions are never
+    derived from a step's input.
     """
 
     def decorate(fn: AgentFn) -> Agent:
@@ -60,7 +88,7 @@ def agent(
             version=version,
             model=model,
             fallback_model=fallback_model,
-            instructions=instructions,
+            instructions=_compose_instructions(instructions),
         )
         return Agent(spec)
 
